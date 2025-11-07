@@ -22,6 +22,7 @@ import CameoInviteModal from '@/components/CameoInviteModal';
 import CameoJoinModal from '@/components/CameoJoinModal';
 import Tutorial from '@/components/Tutorial';
 import { AchievementGallery } from '@/components/AchievementNotification';
+import ExitDialog from '@/components/ExitDialog';
 import { storage, setupAutoSave } from '@/utils/storage';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -53,6 +54,9 @@ import {
   Wifi,
   WifiOff,
   CheckCircle2,
+  Gauge,
+  Clock,
+  Loader2,
 } from 'lucide-react';
 
 const MainGameUI = () => {
@@ -103,6 +107,10 @@ const MainGameUI = () => {
   const [aiStatus, setAiStatus] = useState<'active' | 'offline' | 'idle'>('idle');
   const [activeTab, setActiveTab] = useState('stats');
   const [loadingStory, setLoadingStory] = useState(false);
+  const [showExitDialog, setShowExitDialog] = useState(false);
+  const [storySpeed, setStorySpeed] = useState(1); // 0.5x, 1x, 2x multiplier
+  const [quickSaves, setQuickSaves] = useState<any[]>([]);
+  const { textSpeed, updateSettings, authUser } = useGameStore();
 
   // Auto-save setup
   useEffect(() => {
@@ -203,6 +211,22 @@ const MainGameUI = () => {
     initializeGame();
   }, [player, genre, gameState.isInitialized]);
 
+  // Load quick saves
+  useEffect(() => {
+    const loadQuickSaves = async () => {
+      if (!authUser?.name) return;
+      try {
+        const saves = await api.getSaves(authUser.name);
+        if (saves && saves.length > 0) {
+          setQuickSaves(saves.slice(0, 5)); // Top 5 saves
+        }
+      } catch (e) {
+        // Silently fail
+      }
+    };
+    loadQuickSaves();
+  }, [authUser?.name, gameState.turnCount]);
+
   // Typewriter effect for story animation
   useEffect(() => {
     if (!currentStory) return;
@@ -210,6 +234,10 @@ const MainGameUI = () => {
     setIsTyping(true);
     setDisplayedText('');
     let index = 0;
+    
+    // Calculate speed: base textSpeed (50ms) divided by storySpeed multiplier
+    const baseSpeed = textSpeed || 50;
+    const actualSpeed = baseSpeed / storySpeed;
     
     const interval = setInterval(() => {
       if (index < currentStory.length) {
@@ -219,10 +247,10 @@ const MainGameUI = () => {
         setIsTyping(false);
         clearInterval(interval);
       }
-    }, 20); // Faster typing speed (20ms per character)
+    }, actualSpeed);
 
     return () => clearInterval(interval);
-  }, [currentStory]);
+  }, [currentStory, storySpeed, textSpeed]);
 
   const handleChoice = async (choice: string) => {
     if (!player) return;
@@ -436,9 +464,16 @@ const MainGameUI = () => {
   };
 
   const handleExitGame = () => {
-    if (window.confirm('Are you sure you want to exit? Make sure to save your progress!')) {
-      setScreen('intro');
-    }
+    setShowExitDialog(true);
+  };
+
+  const confirmExitGame = () => {
+    setShowExitDialog(false);
+    setScreen('intro');
+  };
+
+  const cancelExitGame = () => {
+    setShowExitDialog(false);
   };
 
   const handleOpenSettings = () => {
@@ -505,6 +540,11 @@ const MainGameUI = () => {
         open={showCameoJoin}
         onOpenChange={setShowCameoJoin}
       />
+      <ExitDialog
+        open={showExitDialog}
+        onConfirm={confirmExitGame}
+        onCancel={cancelExitGame}
+      />
       <WorldMapModal
         isOpen={showWorldMap}
         onClose={() => setShowWorldMap(false)}
@@ -526,72 +566,52 @@ const MainGameUI = () => {
       {/* Main Game Container */}
       <div className="relative z-10 h-screen flex flex-col overflow-hidden">
         {/* Top HUD */}
-        <div className="p-4 bg-card/90 backdrop-blur-sm border-b-2 border-primary/30">
-          <div className="container mx-auto flex items-center justify-between gap-4">
+        <div className="p-3 bg-card/90 backdrop-blur-sm border-b-2 border-primary/30">
+          <div className="container mx-auto flex flex-wrap items-center gap-3">
             {/* Left Section: Player Info + HP/XP Stacked */}
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3 flex-shrink-0 min-w-[220px]">
               {/* Player Info */}
               <div className="flex-shrink-0">
-                <h2 className="text-2xl font-fantasy text-primary">{player.name}</h2>
-                <p className="text-sm text-muted-foreground">
+                <h2 className="text-xl font-fantasy text-primary leading-tight">{player.name}</h2>
+                <p className="text-xs text-muted-foreground leading-tight">
                   Level {player.level} {player.class}
                 </p>
               </div>
 
               {/* HP and XP Bars - Stacked Vertically */}
-              <div className="flex flex-col gap-2 min-w-48">
+              <div className="flex flex-col gap-1.5 min-w-40">
                 {/* Health Bar */}
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <Heart className="w-4 h-4 text-red-500" />
-                    <span className="text-sm font-semibold">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <Heart className="w-3.5 h-3.5 text-red-500" />
+                    <span className="text-xs font-semibold">
                       {player.health}/{player.maxHealth}
                     </span>
                   </div>
-                  <Progress value={healthPercentage} className="h-3 bg-muted" />
+                  <Progress value={healthPercentage} className="h-2 bg-muted" />
                 </div>
 
                 {/* XP Bar */}
                 <div>
-                  <div className="flex items-center gap-2 mb-1">
-                    <Zap className="w-4 h-4 text-primary" />
-                    <span className="text-sm font-semibold">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <Zap className="w-3.5 h-3.5 text-primary" />
+                    <span className="text-xs font-semibold">
                       XP: {player.xp}/{player.maxXp}
                     </span>
                   </div>
-                  <Progress value={xpPercentage} className="h-3 bg-muted" />
+                  <Progress value={xpPercentage} className="h-2 bg-muted" />
                 </div>
               </div>
             </div>
 
             {/* Center Section: AI Status + Quest Progress */}
-            <div className="flex items-center gap-4 flex-1 justify-center">
-              {/* AI Status Indicator */}
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/50 border border-border/50">
-                {aiStatus === 'active' ? (
-                  <>
-                    <Activity className="w-4 h-4 text-green-500 animate-pulse" />
-                    <span className="text-sm font-semibold text-green-500">AI Active</span>
-                  </>
-                ) : aiStatus === 'offline' ? (
-                  <>
-                    <WifiOff className="w-4 h-4 text-red-500" />
-                    <span className="text-sm font-semibold text-red-500">AI Offline</span>
-                  </>
-                ) : (
-                  <>
-                    <Wifi className="w-4 h-4 text-muted-foreground" />
-                    <span className="text-sm font-semibold text-muted-foreground">AI Idle</span>
-                  </>
-                )}
-              </div>
-
+            <div className="flex flex-1 flex-wrap items-center justify-center gap-3 min-w-[240px]">
               {/* Quest Progress Bar */}
               {activeQuests.length > 0 && (
-                <div className="min-w-64 max-w-80">
-                  <div className="flex items-center gap-2 mb-1">
-                    <Target className="w-4 h-4 text-primary" />
-                    <span className="text-sm font-semibold truncate">
+                <div className="min-w-48 max-w-72 flex-shrink">
+                  <div className="flex items-center gap-1.5 mb-0.5">
+                    <Target className="w-3.5 h-3.5 text-primary flex-shrink-0" />
+                    <span className="text-xs font-semibold truncate">
                       {activeQuests[0].title || 'Quest'}
                     </span>
                     {activeQuests[0].progress !== undefined && (
@@ -602,10 +622,10 @@ const MainGameUI = () => {
                   </div>
                   <Progress 
                     value={activeQuests[0].progress || 0} 
-                    className="h-3 bg-muted" 
+                    className="h-2 bg-muted" 
                   />
                   {activeQuests[0].progress === 100 && (
-                    <div className="flex items-center gap-1 mt-1 text-xs text-primary">
+                    <div className="flex items-center gap-1 mt-0.5 text-xs text-primary">
                       <CheckCircle2 className="w-3 h-3" />
                       <span>Quest Complete!</span>
                     </div>
@@ -615,17 +635,17 @@ const MainGameUI = () => {
 
               {cameos.length > 0 && (
                 <div
-                  className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5"
+                  className="flex flex-wrap items-center gap-1.5 rounded-lg border border-primary/30 bg-primary/10 px-2 py-1 flex-shrink-0"
                   aria-label="Active cameo companions"
                 >
-                  <Users className="w-4 h-4 text-primary" />
+                  <Users className="w-3.5 h-3.5 text-primary" />
                   <span className="text-xs font-semibold uppercase tracking-wide text-primary">
                     Cameos
                   </span>
                   {cameos.slice(0, 3).map((cameo) => (
                     <span
                       key={cameo.code}
-                      className="rounded-full border border-primary/40 bg-background/90 px-2 py-0.5 text-xs font-medium text-foreground"
+                      className="rounded-full border border-primary/40 bg-background/90 px-1.5 py-0.5 text-xs font-medium text-foreground"
                       aria-label={`Cameo ally ${cameo.guest?.name || 'Unnamed hero'}`}
                     >
                       {cameo.guest?.name || 'Ally'}
@@ -640,8 +660,59 @@ const MainGameUI = () => {
               )}
             </div>
 
-            {/* Quick Actions */}
-            <div className="flex gap-2">
+            {/* Right Section: Speed Controls, Quick Saves, Actions */}
+            <div className="flex items-center gap-2 flex-shrink-0 ml-auto min-w-[260px] flex-wrap justify-end">
+              {/* Story Speed Controls */}
+              <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-background/50 border border-border/50">
+                <Gauge className="w-3 h-3 text-muted-foreground" />
+                {[0.5, 1, 2].map((speed) => (
+                  <Button
+                    key={speed}
+                    variant={storySpeed === speed ? 'default' : 'ghost'}
+                    size="sm"
+                    className="h-6 px-1.5 text-xs"
+                    onClick={() => setStorySpeed(speed)}
+                    title={`${speed}x speed`}
+                  >
+                    {speed}x
+                  </Button>
+                ))}
+              </div>
+
+              {/* Quick Save Slots */}
+              {quickSaves.length > 0 && (
+                <div className="flex items-center gap-1">
+                  <Save className="w-3.5 h-3.5 text-muted-foreground" />
+                  <div className="flex gap-1">
+                    {quickSaves.slice(0, 3).map((save, idx) => (
+                      <Button
+                        key={save._id || idx}
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-1.5 text-xs"
+                        onClick={async () => {
+                          try {
+                            const loaded = await api.loadGame(save._id);
+                            if (loaded?.player) useGameStore.setState({ player: loaded.player });
+                            if (loaded?.genre) setGenre(loaded.genre);
+                            if (loaded?.story) updateStory(loaded.story);
+                            if (Array.isArray(loaded?.choices)) setPlayerChoices(loaded.choices);
+                            toast.success('Game loaded');
+                          } catch (e) {
+                            toast.error('Failed to load save');
+                          }
+                        }}
+                        title={save.name || `Save ${idx + 1}`}
+                      >
+                        {idx + 1}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Actions */}
+              <div className="flex gap-1.5">
               <Button
                 variant="outline"
                 size="icon"
@@ -766,6 +837,7 @@ const MainGameUI = () => {
               >
                 <LogOut className="w-5 h-5 text-destructive" />
               </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -777,6 +849,24 @@ const MainGameUI = () => {
             <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border flex-shrink-0">
               <Book className="w-6 h-6 text-primary" />
               <h3 className="text-xl font-fantasy text-primary">The Tale Unfolds</h3>
+              <div className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-lg bg-background/50 border border-border/50">
+                {aiStatus === 'active' ? (
+                  <>
+                    <Activity className="w-3.5 h-3.5 text-green-500 animate-pulse" />
+                    <span className="text-xs font-semibold text-green-500">AI Active</span>
+                  </>
+                ) : aiStatus === 'offline' ? (
+                  <>
+                    <WifiOff className="w-3.5 h-3.5 text-red-500" />
+                    <span className="text-xs font-semibold text-red-500">AI Offline</span>
+                  </>
+                ) : (
+                  <>
+                    <Wifi className="w-3.5 h-3.5 text-muted-foreground" />
+                    <span className="text-xs font-semibold text-muted-foreground">AI Idle</span>
+                  </>
+                )}
+              </div>
             </div>
 
             <ScrollArea className="flex-1 min-h-0 pr-4">
@@ -826,25 +916,27 @@ const MainGameUI = () => {
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="space-y-3 mt-6 pt-6 border-t border-border flex-shrink-0"
+                className="space-y-2 mt-4 pt-4 border-t border-border flex-shrink-0"
               >
-                <p className="text-sm text-muted-foreground font-semibold mb-3">
+                <p className="text-xs text-muted-foreground font-semibold mb-2">
                   What will you do?
                 </p>
-                {playerChoices.map((choice, index) => (
-                  <Button
-                    key={index}
-                    onClick={() => handleChoice(choice)}
-                    disabled={loadingStory}
-                    className={`w-full justify-start text-left h-auto py-4 px-6 bg-primary/10 hover:bg-primary/20 border-2 border-primary/30 hover:border-primary transition-all duration-300 group ${
-                      loadingStory ? 'opacity-60 cursor-not-allowed' : ''
-                    }`}
-                    variant="outline"
-                  >
-                    <Play className="w-4 h-4 mr-3 group-hover:translate-x-1 transition-transform" />
-                    <span className="font-elegant text-base">{choice}</span>
-                  </Button>
-                ))}
+                <div className="grid grid-cols-1 gap-2">
+                  {playerChoices.map((choice, index) => (
+                    <Button
+                      key={index}
+                      onClick={() => handleChoice(choice)}
+                      disabled={loadingStory}
+                      className={`w-full justify-start text-left h-auto py-2 px-4 bg-primary/10 hover:bg-primary/20 border-2 border-primary/30 hover:border-primary transition-all duration-300 group ${
+                        loadingStory ? 'opacity-60 cursor-not-allowed' : ''
+                      }`}
+                      variant="outline"
+                    >
+                      <Play className="w-3.5 h-3.5 mr-2 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+                      <span className="font-elegant text-sm leading-tight">{choice}</span>
+                    </Button>
+                  ))}
+                </div>
               </motion.div>
             )}
           </Card>

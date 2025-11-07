@@ -4,7 +4,7 @@ import { useGameStore } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sword, Shield, Heart, Sparkles, Zap } from 'lucide-react';
+import { Sword, Shield, Heart, Sparkles, Zap, Book } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/services/api';
 import { useTranslation } from 'react-i18next';
@@ -14,9 +14,11 @@ import { toast as sonnerToast } from 'sonner';
 const CombatPanel = () => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const [combatLog, setCombatLog] = useState<string[]>([]);
-  const [damageNumbers, setDamageNumbers] = useState<{ id: number; value: number; isPlayer: boolean }[]>([]);
+  const [combatLog, setCombatLog] = useState<{ id: number; text: string; timestamp: number }[]>([]);
+  const [damageNumbers, setDamageNumbers] = useState<{ id: number; value: number; isPlayer: boolean; x: number; y: number }[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isAttacking, setIsAttacking] = useState(false);
+  const [isEnemyAttacking, setIsEnemyAttacking] = useState(false);
 
   const { 
     player, 
@@ -147,14 +149,17 @@ const CombatPanel = () => {
     // Immediate UI feedback - INSTANT
     setIsProcessing(true);
     
-    // Instant visual feedback (skip log for weapon attacks - make it instant)
+    // Instant visual feedback with animations
     if (action === 'attack' && !itemId) {
-      // Only log if not using a weapon (weapon attacks are instant, no log)
-      setCombatLog(prev => [...prev, `You attack ${currentEnemy.name}!`].slice(-5));
+      setIsAttacking(true);
+      setTimeout(() => setIsAttacking(false), 300);
+      setCombatLog(prev => [...prev, { id: Date.now(), text: `You attack ${currentEnemy.name}!`, timestamp: Date.now() }].slice(-20));
     } else if (action === 'defend') {
-      setCombatLog(prev => [...prev, `You raise your guard!`].slice(-5));
+      setCombatLog(prev => [...prev, { id: Date.now(), text: `You raise your guard!`, timestamp: Date.now() }].slice(-20));
+    } else if (action === 'attack' && itemId) {
+      setIsAttacking(true);
+      setTimeout(() => setIsAttacking(false), 300);
     }
-    // Weapon attacks (itemId present) - NO LOG, just instant damage
     
     if (action === 'run') {
       const success = Math.random() > 0.5;
@@ -183,17 +188,40 @@ const CombatPanel = () => {
 
       // INSTANT UI updates - apply immediately when result arrives
       if (result.enemyDamage > 0) {
-        setDamageNumbers(prev => [...prev, { id: Date.now(), value: result.enemyDamage, isPlayer: false }]);
-        setTimeout(() => setDamageNumbers(prev => prev.slice(1)), 1000);
+        const randomX = Math.random() * 100 - 50;
+        const randomY = Math.random() * 30 - 15;
+        setDamageNumbers(prev => [...prev, { 
+          id: Date.now(), 
+          value: result.enemyDamage, 
+          isPlayer: false,
+          x: randomX,
+          y: randomY
+        }]);
+        setTimeout(() => setDamageNumbers(prev => prev.filter(d => d.id !== Date.now())), 1500);
       }
       if (result.playerDamage > 0) {
-        setDamageNumbers(prev => [...prev, { id: Date.now() + 1, value: result.playerDamage, isPlayer: true }]);
-        setTimeout(() => setDamageNumbers(prev => prev.slice(1)), 1000);
+        setIsEnemyAttacking(true);
+        setTimeout(() => setIsEnemyAttacking(false), 300);
+        const randomX = Math.random() * 100 - 50;
+        const randomY = Math.random() * 30 - 15;
+        setDamageNumbers(prev => [...prev, { 
+          id: Date.now() + 1, 
+          value: result.playerDamage, 
+          isPlayer: true,
+          x: randomX,
+          y: randomY
+        }]);
+        setTimeout(() => setDamageNumbers(prev => prev.filter(d => d.id !== Date.now() + 1)), 1500);
       }
 
-      // Update combat log INSTANTLY with real results (skip if weapon attack - already instant)
-      if (!(action === 'attack' && itemId)) {
-      setCombatLog(prev => [...prev, ...result.combatLog].slice(-5));
+      // Update combat log INSTANTLY with real results
+      if (result.combatLog && Array.isArray(result.combatLog)) {
+        const newLogs = result.combatLog.map((text: string) => ({
+          id: Date.now() + Math.random(),
+          text,
+          timestamp: Date.now()
+        }));
+        setCombatLog(prev => [...prev, ...newLogs].slice(-20));
       }
       
       // Update health INSTANTLY (this is the key - instant HP decrease)
@@ -257,9 +285,25 @@ const CombatPanel = () => {
   };
 
   const handleEnemyAttack = () => {
+    setIsEnemyAttacking(true);
+    setTimeout(() => setIsEnemyAttacking(false), 300);
     const damage = Math.floor(Math.random() * currentEnemy.attack) + 5;
     damagePlayer(damage);
-    setCombatLog(prev => [...prev, `${currentEnemy.name} attacks for ${damage} damage!`].slice(-5));
+    const randomX = Math.random() * 100 - 50;
+    const randomY = Math.random() * 30 - 15;
+    setDamageNumbers(prev => [...prev, { 
+      id: Date.now(), 
+      value: damage, 
+      isPlayer: true,
+      x: randomX,
+      y: randomY
+    }]);
+    setTimeout(() => setDamageNumbers(prev => prev.filter(d => d.id !== Date.now())), 1500);
+    setCombatLog(prev => [...prev, { 
+      id: Date.now(), 
+      text: `${currentEnemy.name} attacks for ${damage} damage!`, 
+      timestamp: Date.now() 
+    }].slice(-20));
   };
 
   const healthPercent = (player.health / player.maxHealth) * 100;
@@ -283,15 +327,32 @@ const CombatPanel = () => {
           {/* Player */}
           <div className="text-center space-y-4 relative">
             <motion.div
-              animate={{ x: [0, -10, 0] }}
-              transition={{ duration: 0.5, repeat: Infinity }}
-              className="text-6xl"
+              animate={isAttacking ? { 
+                x: [0, -30, 0],
+                rotate: [0, -15, 0],
+                scale: [1, 1.2, 1]
+              } : { x: [0, -10, 0] }}
+              transition={isAttacking ? { duration: 0.3 } : { duration: 0.5, repeat: Infinity }}
+              className="text-6xl relative"
             >
               🧙‍♂️
+              {isAttacking && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0 }}
+                  animate={{ opacity: 1, scale: 1.5 }}
+                  exit={{ opacity: 0, scale: 0 }}
+                  className="absolute inset-0 text-primary"
+                >
+                  ⚔️
+                </motion.div>
+              )}
             </motion.div>
             <div>
               <p className="font-bold text-lg">{player.name}</p>
-              <Progress value={healthPercent} className="h-3 mt-2" />
+              <Progress 
+                value={healthPercent} 
+                className={`h-3 mt-2 transition-all duration-300 ${healthPercent < 30 ? 'bg-destructive' : ''}`}
+              />
               <p className="text-sm text-muted-foreground mt-1">
                 {player.health}/{player.maxHealth} HP
               </p>
@@ -300,10 +361,17 @@ const CombatPanel = () => {
               {damageNumbers.filter(d => d.isPlayer).map(dmg => (
                 <motion.div
                   key={dmg.id}
-                  initial={{ opacity: 1, y: 0 }}
-                  animate={{ opacity: 0, y: -50 }}
+                  initial={{ opacity: 1, y: 0, x: 0, scale: 1 }}
+                  animate={{ 
+                    opacity: [1, 1, 0], 
+                    y: -80 + dmg.y, 
+                    x: dmg.x,
+                    scale: [1, 1.5, 0.8]
+                  }}
                   exit={{ opacity: 0 }}
-                  className="absolute top-0 left-1/2 -translate-x-1/2 text-2xl font-bold text-destructive"
+                  transition={{ duration: 1.5, ease: "easeOut" }}
+                  className="absolute top-0 left-1/2 text-2xl font-bold text-destructive pointer-events-none"
+                  style={{ transform: `translateX(${dmg.x}px)` }}
                 >
                   -{dmg.value}
                 </motion.div>
@@ -314,15 +382,32 @@ const CombatPanel = () => {
           {/* Enemy */}
           <div className="text-center space-y-4 relative">
             <motion.div
-              animate={{ x: [0, 10, 0] }}
-              transition={{ duration: 0.5, repeat: Infinity }}
-              className="text-6xl"
+              animate={isEnemyAttacking ? { 
+                x: [0, 30, 0],
+                rotate: [0, 15, 0],
+                scale: [1, 1.2, 1]
+              } : { x: [0, 10, 0] }}
+              transition={isEnemyAttacking ? { duration: 0.3 } : { duration: 0.5, repeat: Infinity }}
+              className="text-6xl relative"
             >
               👹
+              {isEnemyAttacking && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0 }}
+                  animate={{ opacity: 1, scale: 1.5 }}
+                  exit={{ opacity: 0, scale: 0 }}
+                  className="absolute inset-0 text-destructive"
+                >
+                  ⚔️
+                </motion.div>
+              )}
             </motion.div>
             <div>
               <p className="font-bold text-lg">{currentEnemy.name}</p>
-              <Progress value={enemyHealthPercent} className="h-3 mt-2" />
+              <Progress 
+                value={enemyHealthPercent} 
+                className={`h-3 mt-2 transition-all duration-300 ${enemyHealthPercent < 30 ? 'bg-destructive' : ''}`}
+              />
               <p className="text-sm text-muted-foreground mt-1">
                 {currentEnemy.health}/{currentEnemy.maxHealth} HP
               </p>
@@ -331,10 +416,17 @@ const CombatPanel = () => {
               {damageNumbers.filter(d => !d.isPlayer).map(dmg => (
                 <motion.div
                   key={dmg.id}
-                  initial={{ opacity: 1, y: 0 }}
-                  animate={{ opacity: 0, y: -50 }}
+                  initial={{ opacity: 1, y: 0, x: 0, scale: 1 }}
+                  animate={{ 
+                    opacity: [1, 1, 0], 
+                    y: -80 + dmg.y, 
+                    x: dmg.x,
+                    scale: [1, 1.5, 0.8]
+                  }}
                   exit={{ opacity: 0 }}
-                  className="absolute top-0 left-1/2 -translate-x-1/2 text-2xl font-bold text-primary"
+                  transition={{ duration: 1.5, ease: "easeOut" }}
+                  className="absolute top-0 left-1/2 text-2xl font-bold text-primary pointer-events-none"
+                  style={{ transform: `translateX(${dmg.x}px)` }}
                 >
                   -{dmg.value}
                 </motion.div>
@@ -343,18 +435,33 @@ const CombatPanel = () => {
           </div>
         </div>
 
-        {/* Combat Log */}
-        <div className="bg-muted/50 rounded-lg p-4 h-24 overflow-y-auto">
-          {combatLog.map((log, i) => (
-            <motion.p
-              key={i}
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="text-sm text-muted-foreground"
-            >
-              {log}
-            </motion.p>
-          ))}
+        {/* Combat Log Timeline */}
+        <div className="bg-muted/50 rounded-lg p-4 border border-border/50">
+          <div className="flex items-center gap-2 mb-2">
+            <Book className="w-4 h-4 text-muted-foreground" />
+            <span className="text-sm font-semibold">Combat Log</span>
+          </div>
+          <ScrollArea className="h-32">
+            <div className="space-y-1">
+              {combatLog.length === 0 ? (
+                <p className="text-sm text-muted-foreground italic">Combat log will appear here...</p>
+              ) : (
+                combatLog.map((log) => (
+                  <motion.div
+                    key={log.id}
+                    initial={{ opacity: 0, x: -20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="flex items-start gap-2 text-sm"
+                  >
+                    <span className="text-xs text-muted-foreground font-mono shrink-0">
+                      {new Date(log.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    </span>
+                    <span className="text-foreground">{log.text}</span>
+                  </motion.div>
+                ))
+              )}
+            </div>
+          </ScrollArea>
         </div>
 
         {/* Weapons List - Always visible if weapons available */}

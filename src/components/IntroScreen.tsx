@@ -3,12 +3,15 @@ import { motion } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Card } from '@/components/ui/card';
 import dungeonBg from '@/assets/dungeon-bg.jpg';
-import { Sword, Play, Settings, BookOpen } from 'lucide-react';
+import { Sword, Play, Settings, BookOpen, Moon, Sun, User, Clock, Award, Sparkles } from 'lucide-react';
 import { api } from '@/services/api';
 import { useGoogleLogin } from '@react-oauth/google';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { toast } from 'sonner';
+import MiniGameHub from '@/components/MiniGameHub';
+import { useTheme } from 'next-themes';
 
 const IntroScreen = () => {
   const setScreen = useGameStore((state) => state.setScreen);
@@ -25,7 +28,12 @@ const IntroScreen = () => {
   const [showContinue, setShowContinue] = useState(false);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
+  const [quickStats, setQuickStats] = useState<{ player?: any; lastPlayed?: string } | null>(null);
   const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
+  const { theme, setTheme } = useTheme();
+  const [arcadeOpen, setArcadeOpen] = useState(false);
+
+  const handleOpenSettings = () => setScreen('settings');
 
   const initials = useMemo(() => {
     if (!authUser?.name) return 'GG';
@@ -74,6 +82,45 @@ const IntroScreen = () => {
     if (authUser?.name && !name) {
       setName(authUser.name);
     }
+  }, [authUser?.name]);
+
+  // Load quick stats for returning user
+  useEffect(() => {
+    const loadQuickStats = async () => {
+      if (!authUser?.name) return;
+      try {
+        const saves = await api.getSaves(authUser.name);
+        if (saves && saves.length > 0) {
+          const latest = saves[0];
+          if (latest.updatedAt) {
+            const lastPlayed = new Date(latest.updatedAt);
+            const now = new Date();
+            const diffMs = now.getTime() - lastPlayed.getTime();
+            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+            const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+            const diffMins = Math.floor(diffMs / (1000 * 60));
+            
+            let timeAgo = '';
+            if (diffDays > 0) {
+              timeAgo = `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
+            } else if (diffHours > 0) {
+              timeAgo = `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
+            } else if (diffMins > 0) {
+              timeAgo = `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
+            } else {
+              timeAgo = 'Just now';
+            }
+
+            setQuickStats({
+              lastPlayed: timeAgo,
+            });
+          }
+        }
+      } catch (e) {
+        // Silently fail - user might not have saves yet
+      }
+    };
+    loadQuickStats();
   }, [authUser?.name]);
 
   const handleSignOut = () => {
@@ -162,6 +209,27 @@ const IntroScreen = () => {
         ))}
       </div>
 
+      {/* Header */}
+      <div className="relative z-20 w-full px-6 pt-6 flex items-center justify-between">
+        <Button
+          onClick={() => setArcadeOpen(true)}
+          className="gap-2 rounded-full border border-primary/30 bg-primary/10 text-primary shadow-sm transition-all hover:bg-primary/20"
+        >
+          <Sparkles className="w-4 h-4" /> Mini-Game Arcade
+        </Button>
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="icon"
+            className="rounded-full border border-transparent hover:border-primary/30 hover:bg-primary/10"
+            onClick={handleOpenSettings}
+            title="Settings"
+          >
+            <Settings className="w-5 h-5" />
+          </Button>
+        </div>
+      </div>
+
       {/* Content */}
       <div className="relative z-20 flex flex-col items-center justify-center min-h-screen px-4 py-12">
         {/* Title */}
@@ -185,6 +253,25 @@ const IntroScreen = () => {
           </p>
         </motion.div>
 
+        {/* Quick Stats Preview */}
+        {quickStats && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.6, delay: 0.3 }}
+            className="mb-6 w-full max-w-2xl"
+          >
+            <Card className="bg-card/90 backdrop-blur-sm border-primary/30 p-4">
+              <div className="flex items-center gap-4 text-sm">
+                <Clock className="w-4 h-4 text-primary" />
+                <span className="text-muted-foreground">
+                  Last played: <span className="font-semibold text-foreground">{quickStats.lastPlayed}</span>
+                </span>
+              </div>
+            </Card>
+          </motion.div>
+        )}
+
         {/* Action Buttons */}
         <motion.div
           initial={{ opacity: 0, y: 50 }}
@@ -201,14 +288,14 @@ const IntroScreen = () => {
           </Button>
 
           <div className="space-y-4 rounded-2xl border border-primary/20 bg-background/80 p-4">
-            <Button
-              variant="secondary"
+          <Button
+            variant="secondary"
               className="h-14 w-full text-lg bg-card/80 hover:bg-card border-2 border-primary/30 hover:border-primary/60 transition-all duration-300"
               onClick={() => setShowContinue((v) => !v)}
-            >
-              <BookOpen className="mr-2" />
-              Continue Adventure
-            </Button>
+          >
+            <BookOpen className="mr-2" />
+            Continue Adventure
+          </Button>
             {showContinue && (
               <div className="flex gap-2">
                 <Input
@@ -281,14 +368,16 @@ const IntroScreen = () => {
             </div>
           </div>
 
-          <Button
-            variant="ghost"
-            onClick={() => setScreen('settings')}
-            className="h-12 text-base hover:bg-primary/10 transition-all duration-300"
-          >
-            <Settings className="mr-2" />
-            Settings
-          </Button>
+          <div className="flex gap-2">
+            <Button
+              variant="ghost"
+              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+              className="h-12 w-12 hover:bg-primary/10 transition-all duration-300"
+              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+            >
+              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+            </Button>
+          </div>
         </motion.div>
 
         {/* Footer */}
@@ -301,6 +390,8 @@ const IntroScreen = () => {
           <p className="font-elegant">Powered by Gemini AI · © AI Dungeon Master</p>
         </motion.footer>
       </div>
+
+      <MiniGameHub open={arcadeOpen} onOpenChange={setArcadeOpen} />
     </div>
   );
 };

@@ -48,6 +48,67 @@ export interface CameoEntry {
   status?: string;
 }
 
+export interface ArcadePuzzleSummary {
+  id: string;
+  title: string;
+  difficulty: string;
+  description: string;
+  rewardXp: number;
+  timeLimit: number;
+  theme: string;
+  bestTime?: number | null;
+  highestScore?: number | null;
+  plays?: number;
+  wins?: number;
+}
+
+export interface ArcadePuzzleDetail {
+  id: string;
+  title: string;
+  difficulty: string;
+  description: string;
+  question: string;
+  options: string[];
+  hints?: string[];
+  rewardXp: number;
+  timeLimit: number;
+  theme: string;
+}
+
+export interface ArcadePuzzleProgress {
+  plays: number;
+  wins: number;
+  streak?: number;
+  bestTime?: number;
+  highestScore?: number;
+  totalScore?: number;
+  lastPlayed?: string;
+  lastResult?: {
+    correct: boolean;
+    score: number;
+    timeTaken: number;
+    hintsUsed: number;
+    playedAt: string;
+  };
+}
+
+export interface ArcadeLeaderboardEntry {
+  playerId: string;
+  bestTime?: number;
+  highestScore: number;
+}
+
+export interface ArcadePuzzleResult {
+  puzzleId: string;
+  correct: boolean;
+  score: number;
+  xpAward: number;
+  triggeredBadges: string[];
+  unlockedBadges: Badge[];
+  progress: ArcadePuzzleProgress;
+  leaderboard: ArcadeLeaderboardEntry[];
+}
+
 export interface AuthUser {
   name: string;
   email?: string;
@@ -110,6 +171,19 @@ interface GameState {
   authUser: AuthUser | null;
   setAuthUser: (user: AuthUser | null) => void;
   clearAuthUser: () => void;
+  miniGames: {
+    catalog: ArcadePuzzleSummary[];
+    progress: Record<string, ArcadePuzzleProgress>;
+    loading: boolean;
+    activePuzzle: ArcadePuzzleDetail | null;
+    lastResult: ArcadePuzzleResult | null;
+  };
+  setMiniGameLoading: (loading: boolean) => void;
+  setMiniGameCatalog: (catalog: ArcadePuzzleSummary[]) => void;
+  setMiniGameProgress: (puzzleId: string, progress: ArcadePuzzleProgress) => void;
+  startMiniGame: (detail: ArcadePuzzleDetail, progress?: ArcadePuzzleProgress | null) => void;
+  completeMiniGame: (result: ArcadePuzzleResult) => void;
+  closeMiniGame: () => void;
   
   // Quests
   activeQuests: any[];
@@ -171,6 +245,13 @@ const initialState = {
   badges: [] as Badge[],
   cameos: [] as CameoEntry[],
   authUser: null,
+  miniGames: {
+    catalog: [] as ArcadePuzzleSummary[],
+    progress: {} as Record<string, ArcadePuzzleProgress>,
+    loading: false,
+    activePuzzle: null,
+    lastResult: null,
+  },
   activeQuests: [],
   completedQuests: [],
   gameState: {
@@ -323,6 +404,70 @@ export const useGameStore = create<GameState>((set) => ({
   setAuthUser: (user) => set({ authUser: user }),
 
   clearAuthUser: () => set({ authUser: null }),
+
+  setMiniGameLoading: (loading) =>
+    set((state) => ({ miniGames: { ...state.miniGames, loading } })),
+
+  setMiniGameCatalog: (catalog) =>
+    set((state) => ({ miniGames: { ...state.miniGames, catalog } })),
+
+  setMiniGameProgress: (puzzleId, progress) =>
+    set((state) => ({
+      miniGames: {
+        ...state.miniGames,
+        progress: { ...state.miniGames.progress, [puzzleId]: progress },
+      },
+    })),
+
+  startMiniGame: (detail, progress) =>
+    set((state) => ({
+      miniGames: {
+        ...state.miniGames,
+        activePuzzle: detail,
+        lastResult: null,
+        progress: progress
+          ? { ...state.miniGames.progress, [detail.id]: progress }
+          : state.miniGames.progress,
+      },
+    })),
+
+  completeMiniGame: (result) =>
+    set((state) => {
+      const existingIds = new Set(state.badges.map((b) => b.id));
+      const newBadges = (result.unlockedBadges || []).filter((badge) => !existingIds.has(badge.id));
+      const updatedCatalog = state.miniGames.catalog.map((entry) =>
+        entry.id === result.puzzleId
+          ? {
+              ...entry,
+              wins: result.progress.wins,
+              plays: result.progress.plays,
+              bestTime: result.progress.bestTime ?? entry.bestTime,
+              highestScore: result.progress.highestScore ?? entry.highestScore,
+            }
+          : entry
+      );
+      return {
+        miniGames: {
+          ...state.miniGames,
+          activePuzzle: state.miniGames.activePuzzle,
+          lastResult: result,
+          progress: {
+            ...state.miniGames.progress,
+            [result.puzzleId]: result.progress,
+          },
+          catalog: updatedCatalog,
+        },
+        badges: newBadges.length ? [...state.badges, ...newBadges] : state.badges,
+      };
+    }),
+
+  closeMiniGame: () =>
+    set((state) => ({
+      miniGames: {
+        ...state.miniGames,
+        activePuzzle: null,
+      },
+    })),
   
   damageEnemy: (damage) =>
     set((state) => {

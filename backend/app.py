@@ -15,7 +15,7 @@ import os
 import json
 import secrets
 import datetime
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Set, Tuple
@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
             await db.cameo_invites.create_index("code", unique=True)
             await db.cameo_invites.create_index("expiresAt", expireAfterSeconds=0)
             await db.cameo_invites.create_index([("playerId", ASCENDING)])
+            await db.puzzle_arcade_progress.create_index([("playerId", ASCENDING), ("puzzleId", ASCENDING)], unique=True)
+            await db.puzzle_arcade_progress.create_index([("puzzleId", ASCENDING), ("highestScore", DESCENDING)])
             logger.info("MongoDB indexes ensured.")
         except Exception as idx_err:
             logger.warning(f"Failed to ensure MongoDB indexes: {idx_err}")
@@ -281,6 +283,71 @@ class CameoAcceptRequest(BaseModel):
     inviteCode: str = Field(..., min_length=4, description="Shared cameo code")
 
 
+class PuzzleSummary(BaseModel):
+    id: str
+    title: str
+    difficulty: str
+    description: str
+    rewardXp: int
+    timeLimit: int
+    theme: str
+    bestTime: Optional[float] = None
+    highestScore: Optional[int] = None
+    plays: int = 0
+    wins: int = 0
+
+
+class PuzzleCatalogResponse(BaseModel):
+    puzzles: List[PuzzleSummary]
+
+
+class PuzzleStartRequest(BaseModel):
+    playerId: str
+    puzzleId: str
+
+
+class PuzzleDetail(BaseModel):
+    id: str
+    title: str
+    difficulty: str
+    description: str
+    question: str
+    options: List[str]
+    hints: Optional[List[str]] = None
+    rewardXp: int
+    timeLimit: int
+    theme: str
+
+
+class PuzzleStartResponse(BaseModel):
+    puzzle: PuzzleDetail
+    progress: Optional[Dict[str, Any]] = None
+
+
+class PuzzleSubmitRequest(BaseModel):
+    playerId: str
+    puzzleId: str
+    answer: str
+    timeTaken: float
+    hintsUsed: int = 0
+
+
+class LeaderboardEntry(BaseModel):
+    playerId: str
+    bestTime: Optional[float]
+    highestScore: int
+
+
+class PuzzleSubmitResponse(BaseModel):
+    correct: bool
+    score: int
+    xpAward: int
+    triggeredBadges: List[str]
+    unlockedBadges: List[Dict[str, Any]]
+    progress: Dict[str, Any]
+    leaderboard: List[LeaderboardEntry]
+
+
 # --- Badge System Setup ---
 BADGE_DEFINITIONS: Dict[str, Dict[str, str]] = {
     "trailblazer": {
@@ -303,6 +370,26 @@ BADGE_DEFINITIONS: Dict[str, Dict[str, str]] = {
         "description": "Completed the grand finale of the quest.",
         "icon": "trophy",
     },
+    "arcade_initiate": {
+        "title": "Arcade Initiate",
+        "description": "Won your first puzzle mini-game.",
+        "icon": "sparkles",
+    },
+    "arcade_speed_runner": {
+        "title": "Speed Runner",
+        "description": "Cleared a puzzle mini-game with blazing speed.",
+        "icon": "zap",
+    },
+    "arcade_perfectionist": {
+        "title": "Perfectionist",
+        "description": "Solved a puzzle mini-game without using any hints.",
+        "icon": "star",
+    },
+    "arcade_master": {
+        "title": "Arcade Master",
+        "description": "Completed every challenge in the mini-game arcade.",
+        "icon": "laurel",
+    },
 }
 
 DISCOVERY_KEYWORDS = ["discover", "uncover", "venture", "arrive", "enter the", "step into"]
@@ -310,6 +397,114 @@ PUZZLE_SUCCESS_KEYWORDS = ["solved", "solution", "answer", "decipher", "unlock"]
 TREASURE_KEYWORDS = ["legendary", "epic", "artifact", "relic", "treasure"]
 CAMEO_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
+
+PUZZLE_ARCADE_CATALOG: List[Dict[str, Any]] = [
+    {
+        "id": "archive_lights",
+        "title": "Archive of Lights",
+        "difficulty": "Easy",
+        "description": "Align the enchanted lanterns so that every corridor is illuminated exactly once.",
+        "question": "You have lanterns labeled A, B, C, D that can each shine on two of four hallways. Only one configuration lights all corridors without overlap. Which configuration works?",
+        "options": [
+            "A→1,2; B→2,3; C→3,4; D→1,4",
+            "A→1,3; B→2,4; C→1,4; D→2,3",
+            "A→1,4; B→1,3; C→2,4; D→2,3",
+            "A→1,2; B→3,4; C→1,4; D→2,3",
+            "A→2,3; B→1,4; C→1,2; D→3,4",
+        ],
+        "correctAnswer": "A→1,4; B→1,3; C→2,4; D→2,3",
+        "hints": [
+            "Each hallway must be covered exactly once — track overlaps carefully.",
+            "Try pairing lantern A with hallways that no other lantern can cover simultaneously.",
+        ],
+        "rewardXp": 45,
+        "timeLimit": 90,
+        "theme": "amber",
+    },
+    {
+        "id": "runic_sequence",
+        "title": "Runic Sequence",
+        "difficulty": "Medium",
+        "description": "Decode the rune order that unlocks the crystal vault.",
+        "question": "Runes follow the pattern: Ember, Gale, Tidal, Ember, Gale, ?. Which rune completes the sequence?",
+        "options": ["Tidal", "Stone", "Storm", "Ember", "Gale"],
+        "correctAnswer": "Tidal",
+        "hints": [
+            "Look at the positions where 'Ember' appears.",
+            "It's a repeating three-step cycle.",
+        ],
+        "rewardXp": 60,
+        "timeLimit": 75,
+        "theme": "violet",
+    },
+    {
+        "id": "mirror_logic",
+        "title": "Mirror Logic",
+        "difficulty": "Hard",
+        "description": "Arrange mirrored sigils so every beam reflects back to the origin.",
+        "question": "Three mirrors (A,B,C) must reflect beams from three crystals (1,2,3) back to the origin. Only one pairing does not cross paths. Which is it?",
+        "options": [
+            "A↔1, B↔2, C↔3",
+            "A↔2, B↔3, C↔1",
+            "A↔3, B↔1, C↔2",
+            "A↔1, B↔3, C↔2",
+            "A↔2, B↔1, C↔3",
+        ],
+        "correctAnswer": "A↔2, B↔3, C↔1",
+        "hints": [
+            "Draw the beam paths to see where they cross.",
+            "Keep mirror C away from the shortest beam.",
+        ],
+        "rewardXp": 85,
+        "timeLimit": 120,
+        "theme": "cyan",
+    },
+    {
+        "id": "cipher_tiles",
+        "title": "Cipher Tiles",
+        "difficulty": "Medium",
+        "description": "Translate the mosaic cipher before the tiles crumble.",
+        "question": "Tiles spell 'ROAEHT'. Rearranging reveals the password whispered by the guardians. What is it?",
+        "options": ["HEARTO", "AETHER", "EARTHO", "TEAROH", "HORATE"],
+        "correctAnswer": "AETHER",
+        "hints": [
+            "Think of a word linked to ancient magic.",
+            "The vowels might already be in the correct order.",
+        ],
+        "rewardXp": 55,
+        "timeLimit": 60,
+        "theme": "indigo",
+    },
+    {
+        "id": "constellation_path",
+        "title": "Constellation Path",
+        "difficulty": "Expert",
+        "description": "Trace the correct constellation to awaken the astral gate.",
+        "question": "You must connect stars numbered 1-7 without lifting the quill or crossing lines. Which ordered path works?",
+        "options": [
+            "1-3-5-7-6-4-2",
+            "1-4-7-5-2-3-6",
+            "1-5-2-6-3-7-4",
+            "1-2-4-6-7-5-3",
+            "1-6-4-2-5-7-3",
+        ],
+        "correctAnswer": "1-5-2-6-3-7-4",
+        "hints": [
+            "Break the board into triangles that share edges.",
+            "Try starting with the longest segment to reduce crossings.",
+        ],
+        "rewardXp": 110,
+        "timeLimit": 150,
+        "theme": "gold",
+    },
+]
+
+ARCADE_SPECIAL_BADGES: Dict[str, str] = {
+    "arcade_initiate": "First puzzle victory",
+    "arcade_speed_runner": "Finished under target time",
+    "arcade_perfectionist": "Solved without hints",
+    "arcade_master": "Cleared entire arcade",
+}
 
 def _sanitize_badge_list(badges: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
     if badges is None:
@@ -350,7 +545,7 @@ async def resolve_badges(
 
     if badges is None:
         badges = []
-        if db:
+    if db is not None:
             try:
                 snapshot = await db.saves.find_one(
                     {"playerId": player_name, "saveSlot": 1},
@@ -391,6 +586,126 @@ async def resolve_badges(
 
 def generate_cameo_code(length: int = 8) -> str:
     return "".join(secrets.choice(CAMEO_CODE_ALPHABET) for _ in range(length))
+
+
+def get_arcade_puzzle_definition(puzzle_id: str) -> Optional[Dict[str, Any]]:
+    for entry in PUZZLE_ARCADE_CATALOG:
+        if entry["id"] == puzzle_id:
+            return entry
+    return None
+
+
+def calculate_arcade_score(correct: bool, base_xp: int, time_taken: float, hints_used: int) -> int:
+    if not correct:
+        return 0
+    score = base_xp * 10
+    if time_taken and time_taken > 0:
+        score += max(0, int(240 - time_taken))
+    score -= hints_used * 20
+    return max(score, base_xp * 5)
+
+
+def compute_arcade_xp(puzzle: Dict[str, Any], correct: bool, time_taken: float, hints_used: int) -> int:
+    if not correct:
+        return 0
+    xp = int(puzzle.get("rewardXp", 50))
+    if hints_used == 0:
+        xp += 15
+    time_limit = max(puzzle.get("timeLimit", 90), 1)
+    if time_taken and time_taken <= time_limit * 0.6:
+        xp += 20
+    if time_taken and time_taken <= time_limit * 0.4:
+        xp += 15
+    return xp
+
+
+async def upsert_arcade_progress(
+    player_id: str,
+    puzzle_id: str,
+    correct: bool,
+    score: int,
+    time_taken: float,
+    hints_used: int,
+) -> Dict[str, Any]:
+    if db is None:
+        return {}
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    progress_collection = db.puzzle_arcade_progress
+    existing = await progress_collection.find_one({"playerId": player_id, "puzzleId": puzzle_id})
+
+    plays = (existing or {}).get("plays", 0) + 1
+    wins = (existing or {}).get("wins", 0) + (1 if correct else 0)
+    total_score = (existing or {}).get("totalScore", 0) + max(score, 0)
+    highest_score = max((existing or {}).get("highestScore", 0), score)
+    best_time_candidates = [t for t in [time_taken, (existing or {}).get("bestTime")] if t and t > 0]
+    best_time = min(best_time_candidates) if best_time_candidates else (existing or {}).get("bestTime")
+    streak = ((existing or {}).get("streak", 0) + 1) if correct else 0
+
+    record = {
+        "playerId": player_id,
+        "puzzleId": puzzle_id,
+        "plays": plays,
+        "wins": wins,
+        "streak": streak,
+        "bestTime": best_time,
+        "highestScore": highest_score,
+        "totalScore": total_score,
+        "lastPlayed": now,
+        "lastResult": {
+            "correct": correct,
+            "score": score,
+            "timeTaken": time_taken,
+            "hintsUsed": hints_used,
+            "playedAt": now,
+        },
+    }
+
+    await progress_collection.update_one(
+        {"playerId": player_id, "puzzleId": puzzle_id},
+        {"$set": record},
+        upsert=True,
+    )
+
+    return record
+
+
+async def get_arcade_progress_map(player_id: str) -> Dict[str, Dict[str, Any]]:
+    if db is None:
+        return {}
+    cursor = db.puzzle_arcade_progress.find({"playerId": player_id})
+    progress: Dict[str, Dict[str, Any]] = {}
+    async for doc in cursor:
+        progress[doc.get("puzzleId")] = doc
+    return progress
+
+
+async def fetch_arcade_leaderboard(puzzle_id: str, limit: int = 5) -> List[Dict[str, Any]]:
+    if db is None:
+        return []
+    cursor = db.puzzle_arcade_progress.find({"puzzleId": puzzle_id}).sort(
+        [("highestScore", DESCENDING), ("bestTime", ASCENDING)]
+    ).limit(limit)
+    leaderboard: List[Dict[str, Any]] = []
+    async for doc in cursor:
+        leaderboard.append(
+            {
+                "playerId": doc.get("playerId"),
+                "bestTime": doc.get("bestTime"),
+                "highestScore": doc.get("highestScore", 0),
+            }
+        )
+    return leaderboard
+
+
+async def player_completed_all_puzzles(player_id: str) -> bool:
+    if db is None:
+        return False
+    total_required = len(PUZZLE_ARCADE_CATALOG)
+    if total_required == 0:
+        return False
+    wins = await db.puzzle_arcade_progress.count_documents({"playerId": player_id, "wins": {"$gt": 0}})
+    return wins >= total_required
 
 
 def _sanitize_cameo_list(cameos: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
@@ -918,22 +1233,22 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             raise
 
         if not response.candidates:
-             raise HTTPException(status_code=500, detail="AI failed to generate a combat response.")
+            raise HTTPException(status_code=500, detail="AI failed to generate a combat response.")
 
         # Accessing the text content safely
         if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
             ai_response_text = response.candidates[0].content.parts[0].text
         else:
-             ai_response_text = getattr(response, 'text', '')
+            ai_response_text = getattr(response, 'text', '')
 
         if not ai_response_text:
-             raise HTTPException(status_code=500, detail="AI combat response was empty or blocked.")
+            raise HTTPException(status_code=500, detail="AI combat response was empty or blocked.")
 
         result = parse_json_response(ai_response_text)
         
         # --- Auto-save a combat turn (best-effort) ---
         try:
-            if db:
+            if db is not None:
                 now = datetime.datetime.now(datetime.timezone.utc)
                 combat_entry = {
                     "t": now.isoformat(),
@@ -1010,6 +1325,155 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
 async def options_handler(path: str):
     """Handle CORS preflight requests."""
     return {"message": "OK"}
+
+
+@app.get("/api/minigames/puzzles", response_model=PuzzleCatalogResponse)
+async def api_get_puzzle_catalog(playerId: Optional[str] = Query(default=None)):
+    progress_map: Dict[str, Dict[str, Any]] = {}
+    if playerId:
+        progress_map = await get_arcade_progress_map(playerId)
+
+    summaries: List[PuzzleSummary] = []
+    for puzzle in PUZZLE_ARCADE_CATALOG:
+        stats = progress_map.get(puzzle["id"], {})
+        summary = PuzzleSummary(
+            id=puzzle["id"],
+            title=puzzle["title"],
+            difficulty=puzzle["difficulty"],
+            description=puzzle["description"],
+            rewardXp=puzzle.get("rewardXp", 50),
+            timeLimit=puzzle.get("timeLimit", 90),
+            theme=puzzle.get("theme", "primary"),
+            bestTime=stats.get("bestTime"),
+            highestScore=stats.get("highestScore"),
+            plays=stats.get("plays", 0),
+            wins=stats.get("wins", 0),
+        )
+        summaries.append(summary)
+
+    return PuzzleCatalogResponse(puzzles=summaries)
+
+
+@app.post("/api/minigames/puzzles/start", response_model=PuzzleStartResponse)
+async def api_start_arcade_puzzle(request: PuzzleStartRequest):
+    puzzle = get_arcade_puzzle_definition(request.puzzleId)
+    if not puzzle:
+        raise HTTPException(status_code=404, detail="Puzzle not found")
+
+    progress_map = await get_arcade_progress_map(request.playerId)
+    stats = progress_map.get(request.puzzleId)
+    if stats:
+        stats = dict(stats)
+        stats.pop("_id", None)
+        last_played = stats.get("lastPlayed")
+        if isinstance(last_played, datetime.datetime):
+            stats["lastPlayed"] = last_played.isoformat()
+        last_result = stats.get("lastResult")
+        if isinstance(last_result, dict) and isinstance(last_result.get("playedAt"), datetime.datetime):
+            last_result["playedAt"] = last_result["playedAt"].isoformat()
+
+    detail = PuzzleDetail(
+        id=puzzle["id"],
+        title=puzzle["title"],
+        difficulty=puzzle["difficulty"],
+        description=puzzle["description"],
+        question=puzzle["question"],
+        options=puzzle.get("options", []),
+        hints=puzzle.get("hints", []),
+        rewardXp=puzzle.get("rewardXp", 50),
+        timeLimit=puzzle.get("timeLimit", 90),
+        theme=puzzle.get("theme", "primary"),
+    )
+
+    return PuzzleStartResponse(puzzle=detail, progress=stats)
+
+
+@app.post("/api/minigames/puzzles/submit", response_model=PuzzleSubmitResponse)
+async def api_submit_arcade_puzzle(request: PuzzleSubmitRequest):
+    puzzle = get_arcade_puzzle_definition(request.puzzleId)
+    if not puzzle:
+        raise HTTPException(status_code=404, detail="Puzzle not found")
+
+    correct_answer = str(puzzle.get("correctAnswer", "")).strip().lower()
+    submitted = request.answer.strip().lower()
+    correct = submitted == correct_answer
+
+    xp_award = compute_arcade_xp(puzzle, correct, request.timeTaken, request.hintsUsed)
+    score = calculate_arcade_score(correct, puzzle.get("rewardXp", 50), request.timeTaken, request.hintsUsed)
+
+    progress = await upsert_arcade_progress(
+        request.playerId,
+        request.puzzleId,
+        correct,
+        score,
+        request.timeTaken,
+        request.hintsUsed,
+    )
+
+    progress_serializable = dict(progress)
+    progress_serializable.pop("_id", None)
+    if isinstance(progress_serializable.get("lastPlayed"), datetime.datetime):
+        progress_serializable["lastPlayed"] = progress_serializable["lastPlayed"].isoformat()
+    if isinstance(progress_serializable.get("lastResult"), dict):
+        last_result = progress_serializable["lastResult"]
+        if isinstance(last_result.get("playedAt"), datetime.datetime):
+            last_result["playedAt"] = last_result["playedAt"].isoformat()
+
+    triggered_badges: Set[str] = set()
+    if correct:
+        triggered_badges.add("arcade_initiate")
+        if request.hintsUsed == 0:
+            triggered_badges.add("arcade_perfectionist")
+        time_limit = puzzle.get("timeLimit", 90)
+        if request.timeTaken and request.timeTaken <= time_limit * 0.6:
+            triggered_badges.add("arcade_speed_runner")
+
+    if correct and await player_completed_all_puzzles(request.playerId):
+        triggered_badges.add("arcade_master")
+
+    badges: List[Dict[str, Any]] = []
+    unlocked_badges: List[Dict[str, Any]] = []
+
+    if triggered_badges:
+        badges, unlocked_badges = await resolve_badges(
+            request.playerId,
+            None,
+            triggered_badges,
+        )
+        if db is not None:
+            now = datetime.datetime.now(datetime.timezone.utc)
+            await db.saves.update_one(
+                {"playerId": request.playerId, "saveSlot": 1},
+                {
+                    "$set": {
+                        "badges": badges,
+                        "updatedAt": now,
+                        "deletedAt": None,
+                    }
+                },
+                upsert=True,
+            )
+
+    leaderboard_raw = await fetch_arcade_leaderboard(request.puzzleId)
+    leaderboard = [
+        LeaderboardEntry(
+            playerId=entry.get("playerId", "Unknown"),
+            bestTime=entry.get("bestTime"),
+            highestScore=entry.get("highestScore", 0),
+        )
+        for entry in leaderboard_raw
+    ]
+
+    return PuzzleSubmitResponse(
+        correct=correct,
+        score=score,
+        xpAward=xp_award,
+        triggeredBadges=list(triggered_badges),
+        unlockedBadges=unlocked_badges,
+        progress=progress_serializable,
+        leaderboard=leaderboard,
+    )
+
 
 @app.get("/api/models")
 async def list_models():
@@ -1215,7 +1679,7 @@ async def api_generate_story(request: StoryRequest):
 
         # --- Auto-save to MongoDB (best-effort) ---
         try:
-            if db:
+            if db is not None:
                 # Build compact story log entry
                 story_entry = {
                     "t": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -1299,7 +1763,7 @@ async def api_process_combat(request: CombatRequest):
 
         # --- Auto-save a combat turn (best-effort) ---
         try:
-            if db:
+            if db is not None:
                 now = datetime.datetime.now(datetime.timezone.utc)
                 combat_entry = {
                     "t": now.isoformat(),
@@ -1373,7 +1837,7 @@ async def api_process_combat(request: CombatRequest):
 @app.post("/api/save")
 async def save_game(save_data: SaveData):
     """Endpoint to save game state."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
     try:
         # Convert Pydantic model to dict for MongoDB

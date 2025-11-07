@@ -103,6 +103,79 @@ interface CameoPayload {
   status?: string;
 }
 
+export interface ArcadePuzzleSummary {
+  id: string;
+  title: string;
+  difficulty: string;
+  description: string;
+  rewardXp: number;
+  timeLimit: number;
+  theme: string;
+  bestTime?: number | null;
+  highestScore?: number | null;
+  plays?: number;
+  wins?: number;
+}
+
+export interface ArcadePuzzleDetail {
+  id: string;
+  title: string;
+  difficulty: string;
+  description: string;
+  question: string;
+  options: string[];
+  hints?: string[];
+  rewardXp: number;
+  timeLimit: number;
+  theme: string;
+}
+
+export interface ArcadePuzzleProgress {
+  plays: number;
+  wins: number;
+  streak?: number;
+  bestTime?: number;
+  highestScore?: number;
+  totalScore?: number;
+  lastPlayed?: string;
+  lastResult?: {
+    correct: boolean;
+    score: number;
+    timeTaken: number;
+    hintsUsed: number;
+    playedAt: string;
+  };
+}
+
+export interface ArcadeLeaderboardEntry {
+  playerId: string;
+  bestTime?: number;
+  highestScore: number;
+}
+
+export interface ArcadePuzzleStartResponse {
+  puzzle: ArcadePuzzleDetail;
+  progress?: ArcadePuzzleProgress | null;
+}
+
+export interface ArcadePuzzleSubmitPayload {
+  playerId: string;
+  puzzleId: string;
+  answer: string;
+  timeTaken: number;
+  hintsUsed: number;
+}
+
+export interface ArcadePuzzleSubmitResult {
+  correct: boolean;
+  score: number;
+  xpAward: number;
+  triggeredBadges: string[];
+  unlockedBadges: BadgePayload[];
+  progress: ArcadePuzzleProgress;
+  leaderboard: ArcadeLeaderboardEntry[];
+}
+
 class APIError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -323,6 +396,39 @@ export const api = {
       console.error('Delete save failed:', error);
       throw error;
     }
+  },
+
+  async getPuzzleCatalog(playerId?: string): Promise<ArcadePuzzleSummary[]> {
+    try {
+      const url = new URL(`${API_BASE_URL}/api/minigames/puzzles`);
+      if (playerId) {
+        url.searchParams.set('playerId', playerId);
+      }
+      const response = await fetchWithRetry(url.toString(), { method: 'GET' });
+      const data = await response.json();
+      return data?.puzzles ?? [];
+    } catch (error) {
+      console.error('Arcade catalog fetch failed:', error);
+      return [];
+    }
+  },
+
+  async startPuzzleSession(payload: { playerId: string; puzzleId: string }): Promise<ArcadePuzzleStartResponse> {
+    const response = await fetchWithRetry(`${API_BASE_URL}/api/minigames/puzzles/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return response.json();
+  },
+
+  async submitPuzzleResult(payload: ArcadePuzzleSubmitPayload): Promise<ArcadePuzzleSubmitResult> {
+    const response = await fetchWithRetry(`${API_BASE_URL}/api/minigames/puzzles/submit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    return response.json();
   },
 
   async createCameoInvite(payload: {

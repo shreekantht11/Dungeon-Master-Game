@@ -47,6 +47,29 @@ describe('api service endpoints', () => {
     expect(global.__lastFetchUrl!.endsWith('/api/saves/id2')).toBe(true);
   });
 
+  it('calls correct URL for arcade puzzle catalog', async () => {
+    await api.getPuzzleCatalog('Hero');
+    expect(global.__lastFetchUrl).toBeDefined();
+    expect(global.__lastFetchUrl).toContain('/api/minigames/puzzles');
+    expect(global.__lastFetchUrl).toContain('playerId=Hero');
+  });
+
+  it('calls correct URL for starting an arcade puzzle', async () => {
+    await api.startPuzzleSession({ playerId: 'Hero', puzzleId: 'p1' });
+    expect(global.__lastFetchUrl).toBeDefined();
+    expect(global.__lastFetchUrl!.endsWith('/api/minigames/puzzles/start')).toBe(true);
+    expect(global.__lastFetchOptions?.method).toBe('POST');
+    expect(global.__lastFetchOptions?.body).toContain('p1');
+  });
+
+  it('calls correct URL for submitting an arcade puzzle result', async () => {
+    await api.submitPuzzleResult({ playerId: 'Hero', puzzleId: 'p1', answer: 'A', timeTaken: 42, hintsUsed: 1 });
+    expect(global.__lastFetchUrl).toBeDefined();
+    expect(global.__lastFetchUrl!.endsWith('/api/minigames/puzzles/submit')).toBe(true);
+    expect(global.__lastFetchOptions?.method).toBe('POST');
+    expect(global.__lastFetchOptions?.body).toContain('"answer":"A"');
+  });
+
   it('calls correct URL for getSaves', async () => {
     await api.getSaves('Player');
     expect(global.__lastFetchUrl).toBeDefined();
