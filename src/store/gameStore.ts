@@ -67,6 +67,17 @@ interface GameState {
   addQuest: (quest: any) => void;
   completeQuest: (questId: string) => void;
   
+  // Game State Tracking
+  gameState: {
+    turnCount: number;
+    storyPhase: string;
+    combatEncounters: number;
+    isAfterCombat: boolean;
+    isFinalPhase: boolean;
+    isInitialized: boolean;
+  };
+  updateGameState: (updates: Partial<GameState['gameState']>) => void;
+  
   // World
   currentLocation: string;
   discoveredLocations: string[];
@@ -107,6 +118,14 @@ const initialState = {
   currentEnemy: null,
   activeQuests: [],
   completedQuests: [],
+  gameState: {
+    turnCount: 0,
+    storyPhase: 'exploration',
+    combatEncounters: 0,
+    isAfterCombat: false,
+    isFinalPhase: false,
+    isInitialized: false,
+  },
   currentLocation: 'village',
   discoveredLocations: ['village'],
   language: 'English' as const,
@@ -229,6 +248,11 @@ export const useGameStore = create<GameState>((set) => ({
     }),
   
   updateSettings: (settings) => set(settings),
+  
+  updateGameState: (updates) =>
+    set((state) => ({
+      gameState: { ...state.gameState, ...updates },
+    })),
   
   addQuest: (quest) =>
     set((state) => ({

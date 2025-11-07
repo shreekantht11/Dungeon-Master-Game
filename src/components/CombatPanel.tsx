@@ -13,21 +13,36 @@ const CombatPanel = () => {
   const { toast } = useToast();
   const [combatLog, setCombatLog] = useState<string[]>([]);
   const [damageNumbers, setDamageNumbers] = useState<{ id: number; value: number; isPlayer: boolean }[]>([]);
+  const [isProcessing, setIsProcessing] = useState(false);
 
-  const { player, currentEnemy, damageEnemy, damagePlayer, endCombat, addItem, updatePlayer } = useGameStore();
+  const { player, currentEnemy, damageEnemy, damagePlayer, endCombat, addItem, updatePlayer, updateGameState } = useGameStore();
 
   if (!player || !currentEnemy) return null;
 
   const handleAction = async (action: 'attack' | 'defend' | 'use-item' | 'run') => {
+    // Prevent concurrent actions
+    if (isProcessing) return;
+    
+    // Immediate UI feedback
+    setIsProcessing(true);
+    
+    // Instant visual feedback - update UI immediately
+    if (action === 'attack') {
+      setCombatLog(prev => [...prev, `You prepare to attack ${currentEnemy.name}!`].slice(-5));
+    } else if (action === 'defend') {
+      setCombatLog(prev => [...prev, `You raise your guard!`].slice(-5));
+    }
     if (action === 'run') {
       const success = Math.random() > 0.5;
       if (success) {
         toast({ title: 'Escaped!', description: 'You managed to flee from combat.' });
         endCombat();
+        updateGameState({ isAfterCombat: true, storyPhase: 'exploration' });
       } else {
         toast({ title: 'Failed to escape!', description: 'The enemy blocks your path.' });
         handleEnemyAttack();
       }
+      setIsProcessing(false);
       return;
     }
 
@@ -38,7 +53,7 @@ const CombatPanel = () => {
         action,
       });
 
-      // Add damage numbers animation
+      // Instant UI updates - no delays
       if (result.enemyDamage > 0) {
         setDamageNumbers(prev => [...prev, { id: Date.now(), value: result.enemyDamage, isPlayer: false }]);
         setTimeout(() => setDamageNumbers(prev => prev.slice(1)), 1000);
@@ -48,11 +63,14 @@ const CombatPanel = () => {
         setTimeout(() => setDamageNumbers(prev => prev.slice(1)), 1000);
       }
 
+      // Update combat log instantly
       setCombatLog(prev => [...prev, ...result.combatLog].slice(-5));
+      
+      // Update health instantly
       damageEnemy(result.enemyDamage);
       damagePlayer(result.playerDamage);
 
-      // Check victory
+      // Check victory/defeat
       if (result.victory || result.enemyHealth <= 0) {
         toast({
           title: 'Victory!',
@@ -62,17 +80,34 @@ const CombatPanel = () => {
           updatePlayer({ xp: player.xp + result.rewards.xp });
           result.rewards.items.forEach(item => addItem(item));
         }
-        setTimeout(() => endCombat(), 1500);
+        const currentState = useGameStore.getState();
+        updateGameState({ 
+          isAfterCombat: true, 
+          storyPhase: 'exploration',
+          combatEncounters: (currentState.gameState.combatEncounters || 0) + 1
+        });
+        // End combat after brief delay for victory message
+        setTimeout(() => {
+          endCombat();
+          setIsProcessing(false);
+        }, 1000);
       } else if (result.defeat || result.playerHealth <= 0) {
         toast({
           title: 'Defeated...',
           description: 'You have fallen in battle.',
           variant: 'destructive',
         });
-        setTimeout(() => endCombat(), 1500);
+        setTimeout(() => {
+          endCombat();
+          setIsProcessing(false);
+        }, 1000);
+      } else {
+        // Continue combat - allow next action immediately
+        setIsProcessing(false);
       }
     } catch (error) {
       console.error('Combat action failed:', error);
+      setIsProcessing(false);
     }
   };
 
@@ -179,19 +214,38 @@ const CombatPanel = () => {
 
         {/* Action Buttons */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Button onClick={() => handleAction('attack')} className="gap-2">
+          <Button 
+            onClick={() => handleAction('attack')} 
+            className="gap-2"
+            disabled={isProcessing}
+          >
             <Sword className="w-4 h-4" />
             {t('actions.attack')}
           </Button>
-          <Button onClick={() => handleAction('defend')} variant="secondary" className="gap-2">
+          <Button 
+            onClick={() => handleAction('defend')} 
+            variant="secondary" 
+            className="gap-2"
+            disabled={isProcessing}
+          >
             <Shield className="w-4 h-4" />
             {t('actions.defend')}
           </Button>
-          <Button onClick={() => handleAction('use-item')} variant="outline" className="gap-2">
+          <Button 
+            onClick={() => handleAction('use-item')} 
+            variant="outline" 
+            className="gap-2"
+            disabled={isProcessing}
+          >
             <Heart className="w-4 h-4" />
             {t('actions.useItem')}
           </Button>
-          <Button onClick={() => handleAction('run')} variant="destructive" className="gap-2">
+          <Button 
+            onClick={() => handleAction('run')} 
+            variant="destructive" 
+            className="gap-2"
+            disabled={isProcessing}
+          >
             <Sparkles className="w-4 h-4" />
             {t('actions.run')}
           </Button>

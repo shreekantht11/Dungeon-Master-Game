@@ -52,11 +52,14 @@ const MainGameUI = () => {
     currentEnemy,
     storyLog,
     genre,
+    gameState,
     updateStory,
     setPlayerChoices,
     addStoryEvent,
     startCombat,
     addItem,
+    addQuest,
+    updateGameState,
     setScreen,
     resetGame,
   } = useGameStore();
@@ -89,58 +92,93 @@ const MainGameUI = () => {
     }
   }, []);
 
-  // Initial story
+  // Initialize game with AI-generated story and loot
   useEffect(() => {
-    const initialStory = `You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls. The path ahead splits into three directions...`;
-    updateStory(initialStory);
-    setPlayerChoices([
-      'Explore the left corridor',
-      'Investigate the center passage',
-      'Take the right pathway',
-    ]);
-  }, []);
+    if (!player || !genre || gameState.isInitialized) return;
+    
+    const initializeGame = async () => {
+      try {
+        setLoadingStory(true);
+        const request = {
+          player,
+          genre: genre || 'Fantasy',
+          previousEvents: [],
+          choice: undefined,
+        };
+        
+        const res = await api.initializeGame(request as any);
+        
+        if (res.story) {
+          updateStory(res.story);
+          addStoryEvent({ text: res.story, type: 'story' });
+        }
+        
+        if (res.choices && Array.isArray(res.choices)) {
+          setPlayerChoices(res.choices);
+        }
+        
+        if (res.quest) {
+          addQuest(res.quest);
+        }
+        
+        if (res.items && Array.isArray(res.items)) {
+          res.items.forEach((item: any) => addItem(item));
+        }
+        
+        updateGameState({ isInitialized: true, turnCount: 0 });
+      } catch (error) {
+        console.error('Failed to initialize game:', error);
+        // Fallback to basic story
+        updateStory("Your adventure begins...");
+        setPlayerChoices(['Explore', 'Investigate', 'Proceed']);
+        updateGameState({ isInitialized: true, turnCount: 0 });
+      } finally {
+        setLoadingStory(false);
+      }
+    };
+    
+    initializeGame();
+  }, [player, genre, gameState.isInitialized]);
 
-  // Typewriter effect
+  // Display story instantly (no typewriter delay)
   useEffect(() => {
     if (!currentStory) return;
-    
-    setIsTyping(true);
-    setDisplayedText('');
-    let index = 0;
-    
-    const interval = setInterval(() => {
-      if (index < currentStory.length) {
-        setDisplayedText((prev) => prev + currentStory[index]);
-        index++;
-      } else {
-        setIsTyping(false);
-        clearInterval(interval);
-      }
-    }, 30);
-
-    return () => clearInterval(interval);
+    setDisplayedText(currentStory);
+    setIsTyping(false);
   }, [currentStory]);
 
   const handleChoice = async (choice: string) => {
     if (!player) return;
     // Prevent concurrent requests
     if (loadingStory) return;
-    setLoadingStory(true);
-    // Clear choices while waiting for backend
+    
+    // Immediate UI feedback - clear choices instantly
     setPlayerChoices([]);
+    setLoadingStory(true);
+    
     try {
-      // Prepare request object
+      // Update turn count
+      const newTurnCount = gameState.turnCount + 1;
+      
+      // Prepare request object with game state
       const request = {
         player,
         genre: genre || 'Fantasy',
         previousEvents: storyLog || [],
         choice,
+        gameState: {
+          turnCount: newTurnCount,
+          storyPhase: gameState.storyPhase,
+          combatEncounters: gameState.combatEncounters,
+          isAfterCombat: gameState.isAfterCombat,
+          isFinalPhase: gameState.isFinalPhase,
+        },
       };
 
-      // Call backend (or fallback mock inside api.generateStory handles errors)
-  const res = await api.generateStory(request as any);
+      // Call backend
+      const res = await api.generateStory(request as any);
 
-      // Update story and choices
+      // Update story and choices instantly
       if (res.story) {
         updateStory(res.story);
         addStoryEvent({ text: res.story, type: 'story' });
@@ -152,10 +190,18 @@ const MainGameUI = () => {
         setPlayerChoices([]);
       }
 
+      // Update game state
+      updateGameState({
+        turnCount: newTurnCount,
+        storyPhase: res.storyPhase || newStoryPhase,
+        isAfterCombat: false,
+      });
+
       // If an enemy is returned, start combat
-      if ((res as any).enemy) {
+      if ((res as any).enemy && res.shouldStartCombat) {
         try {
           startCombat((res as any).enemy as any);
+          updateGameState({ storyPhase: 'combat' });
         } catch (e) {
           console.warn('Failed to start combat from response', e);
         }
@@ -171,6 +217,7 @@ const MainGameUI = () => {
       // Fallback minimal behavior
       updateStory(`You chose to ${choice.toLowerCase()}. The path continues...`);
       setPlayerChoices(['Approach cautiously', 'Draw your weapon', 'Retreat quietly']);
+      updateGameState({ turnCount: gameState.turnCount + 1 });
     } finally {
       setLoadingStory(false);
     }
