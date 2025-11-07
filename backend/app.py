@@ -13,16 +13,20 @@
 import google.generativeai as genai
 import os
 import json
+import secrets
 import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Set, Tuple
 from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
 from bson import ObjectId
 import logging
 from contextlib import asynccontextmanager
+from pymongo import ASCENDING, DESCENDING
+from google.oauth2 import id_token as google_id_token
+from google.auth.transport import requests as google_requests
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -50,6 +54,19 @@ async def lifespan(app: FastAPI):
         # Optional: Test connection
         await db.command('ping')
         logger.info("MongoDB ping successful.")
+        # Ensure indexes for saves, players, and cameo invites
+        try:
+            await db.saves.create_index([("playerId", ASCENDING), ("saveSlot", ASCENDING)], unique=True)
+            await db.saves.create_index([("playerId", ASCENDING), ("updatedAt", DESCENDING)])
+            await db.saves.create_index([("deletedAt", ASCENDING)])
+            await db.players.create_index([("name", ASCENDING)], unique=True)
+            await db.players.create_index([("googleId", ASCENDING)], unique=True, sparse=True)
+            await db.cameo_invites.create_index("code", unique=True)
+            await db.cameo_invites.create_index("expiresAt", expireAfterSeconds=0)
+            await db.cameo_invites.create_index([("playerId", ASCENDING)])
+            logger.info("MongoDB indexes ensured.")
+        except Exception as idx_err:
+            logger.warning(f"Failed to ensure MongoDB indexes: {idx_err}")
     except Exception as e:
         logger.error(f"Failed to connect to MongoDB: {e}")
         raise RuntimeError(f"Failed to connect to MongoDB: {e}")
@@ -228,18 +245,180 @@ class StoryRequest(BaseModel):
     gameState: Optional[Dict[str, Any]] = None  # Track turn count, phase, etc.
     multiplayer: Optional[Dict[str, Any]] = None  # For multiplayer: other player info, merge flag, etc.
     activeQuest: Optional[Dict[str, Any]] = None  # Active quest for story context
+    badgeEvents: Optional[List[str]] = None  # Milestone events triggered on the client
 
 class CombatRequest(BaseModel):
     player: Player
     enemy: Enemy
     action: str
     itemId: Optional[str] = None
+    badgeEvents: Optional[List[str]] = None
 
 class SaveData(BaseModel):
     playerId: str = Field(..., description="Identifier for the player (e.g., user ID or player name)")
     saveSlot: int = Field(..., description="Slot number (e.g., 1, 2, 3)")
     saveName: str = Field(..., description="User-friendly name for the save")
     gameState: Dict[str, Any] = Field(..., description="Complete snapshot of the game state")
+    storyLog: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Compact story log entries")
+    schemaVersion: int = Field(default=1, description="Document schema version for migrations")
+    badges: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Unlocked milestone badges")
+    cameos: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Invited cameo guest characters")
+
+
+class RenameSaveRequest(BaseModel):
+    saveName: str = Field(..., min_length=1, description="New display name for the save slot")
+
+
+class CameoInviteRequest(BaseModel):
+    playerId: str = Field(..., description="Host player generating the invite")
+    cameoPlayer: Player = Field(..., description="Snapshot of the character to share as a cameo")
+    personalMessage: Optional[str] = Field(default=None, description="Optional message to show invitees")
+    expiresInMinutes: Optional[int] = Field(default=120, description="Minutes until invite expires")
+
+
+class CameoAcceptRequest(BaseModel):
+    playerId: str = Field(..., description="Player accepting the cameo invite")
+    inviteCode: str = Field(..., min_length=4, description="Shared cameo code")
+
+
+# --- Badge System Setup ---
+BADGE_DEFINITIONS: Dict[str, Dict[str, str]] = {
+    "trailblazer": {
+        "title": "Trailblazer",
+        "description": "Discovered a new and notable location.",
+        "icon": "compass",
+    },
+    "puzzle_master": {
+        "title": "Puzzle Master",
+        "description": "Solved your first major puzzle.",
+        "icon": "puzzle",
+    },
+    "treasure_seeker": {
+        "title": "Treasure Seeker",
+        "description": "Found a rare or legendary item.",
+        "icon": "treasure",
+    },
+    "finale_champion": {
+        "title": "Finale Champion",
+        "description": "Completed the grand finale of the quest.",
+        "icon": "trophy",
+    },
+}
+
+DISCOVERY_KEYWORDS = ["discover", "uncover", "venture", "arrive", "enter the", "step into"]
+PUZZLE_SUCCESS_KEYWORDS = ["solved", "solution", "answer", "decipher", "unlock"]
+TREASURE_KEYWORDS = ["legendary", "epic", "artifact", "relic", "treasure"]
+CAMEO_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+
+def _sanitize_badge_list(badges: Optional[List[Dict[str, Any]]]) -> Optional[List[Dict[str, Any]]]:
+    if badges is None:
+        return None
+
+    sanitized: List[Dict[str, Any]] = []
+    seen: Set[str] = set()
+    for badge in badges:
+        if not isinstance(badge, dict):
+            continue
+        badge_id = str(badge.get("id", "")).strip()
+        if not badge_id or badge_id in seen:
+            continue
+
+        definition = BADGE_DEFINITIONS.get(badge_id, {})
+        sanitized.append(
+            {
+                "id": badge_id,
+                "title": badge.get("title") or definition.get("title") or badge_id.replace("_", " ").title(),
+                "description": badge.get("description") or definition.get("description", ""),
+                "icon": badge.get("icon") or definition.get("icon", "badge"),
+                "earnedAt": badge.get("earnedAt", datetime.datetime.now(datetime.timezone.utc).isoformat()),
+            }
+        )
+        seen.add(badge_id)
+
+    return sanitized
+
+
+async def resolve_badges(
+    player_name: str,
+    existing_badges: Optional[List[Dict[str, Any]]],
+    triggered_badges: Set[str],
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Merge triggered badge IDs into the player's badge collection."""
+
+    badges = _sanitize_badge_list(existing_badges)
+
+    if badges is None:
+        badges = []
+        if db:
+            try:
+                snapshot = await db.saves.find_one(
+                    {"playerId": player_name, "saveSlot": 1},
+                    {"badges": 1},
+                )
+                if snapshot and snapshot.get("badges"):
+                    badges = _sanitize_badge_list(snapshot.get("badges")) or []
+            except Exception as e:
+                logger.warning(f"Failed to fetch badges for {player_name}: {e}")
+
+    badges = badges or []
+    existing_ids = {badge.get("id") for badge in badges}
+    new_badges: List[Dict[str, Any]] = []
+
+    for badge_id in triggered_badges:
+        badge_id = str(badge_id).strip()
+        if not badge_id or badge_id in existing_ids:
+            continue
+        definition = BADGE_DEFINITIONS.get(badge_id)
+        if not definition:
+            logger.debug(f"Unknown badge id '{badge_id}' - skipping.")
+            continue
+
+        entry = {
+            "id": badge_id,
+            "title": definition["title"],
+            "description": definition["description"],
+            "icon": definition["icon"],
+            "earnedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        badges.append(entry)
+        new_badges.append(entry)
+        existing_ids.add(badge_id)
+        logger.info(f"Badge unlocked for {player_name}: {badge_id}")
+
+    return badges, new_badges
+
+
+def generate_cameo_code(length: int = 8) -> str:
+    return "".join(secrets.choice(CAMEO_CODE_ALPHABET) for _ in range(length))
+
+
+def _sanitize_cameo_list(cameos: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    if not cameos:
+        return []
+
+    sanitized: List[Dict[str, Any]] = []
+    seen_codes: Set[str] = set()
+    for cameo in cameos:
+        if not isinstance(cameo, dict):
+            continue
+        code = str(cameo.get("code", "")).strip()
+        if code in seen_codes:
+            continue
+        entry = {
+            "code": code,
+            "hostPlayerId": cameo.get("hostPlayerId"),
+            "guest": cameo.get("guest"),
+            "status": cameo.get("status", "active"),
+            "joinedAt": cameo.get("joinedAt"),
+            "message": cameo.get("message"),
+        }
+        sanitized.append(entry)
+        seen_codes.add(code)
+    return sanitized
+
+class RenameSaveRequest(BaseModel):
+    saveName: str = Field(..., min_length=1, description="New display name for the save slot")
 
 # --- Helper Function to Parse Gemini JSON Response ---
 def parse_json_response(text: str) -> Dict[str, Any]:
@@ -750,7 +929,54 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
         if not ai_response_text:
              raise HTTPException(status_code=500, detail="AI combat response was empty or blocked.")
 
-        return parse_json_response(ai_response_text)
+        result = parse_json_response(ai_response_text)
+        
+        # --- Auto-save a combat turn (best-effort) ---
+        try:
+            if db:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                combat_entry = {
+                    "t": now.isoformat(),
+                    "text": "Combat turn processed",
+                    "type": "combat",
+                    "meta": {
+                        "action": action,
+                        "playerDamage": result.get("playerDamage"),
+                        "enemyDamage": result.get("enemyDamage"),
+                        "victory": result.get("victory"),
+                        "defeat": result.get("defeat"),
+                    },
+                }
+                existing = await db.saves.find_one({"playerId": player.name, "saveSlot": 1})
+                existing_log = existing.get("storyLog", []) if existing else []
+                story_log = existing_log + [combat_entry]
+                next_state = (existing or {}).get("gameState", {})
+                next_state.update({
+                    "player": player.model_dump(by_alias=True),
+                })
+                await db.saves.update_one(
+                    {"playerId": player.name, "saveSlot": 1},
+                    {
+                        "$setOnInsert": {
+                            "createdAt": now,
+                            "schemaVersion": 1,
+                        },
+                        "$set": {
+                            "playerId": player.name,
+                            "saveSlot": 1,
+                            "saveName": "AutoSave",
+                            "gameState": next_state,
+                            "storyLog": story_log,
+                            "updatedAt": now,
+                            "deletedAt": None,
+                        },
+                    },
+                    upsert=True,
+                )
+        except Exception as autosave_err:
+            logger.warning(f"Autosave failed in /api/combat: {autosave_err}")
+
+        return result
     except Exception as e:
         logger.error(f"Error during Gemini API call for combat: {e}")
         # Provide a fallback basic combat exchange
@@ -937,6 +1163,112 @@ async def api_generate_story(request: StoryRequest):
             if not result.get("isFinalPhase"):
                 result["isFinalPhase"] = True
         
+        previous_state = request.gameState or {}
+        existing_badges_state = previous_state.get("badges") if isinstance(previous_state, dict) else None
+        existing_cameos_state_raw = previous_state.get("cameos") if isinstance(previous_state, dict) else []
+        if not isinstance(existing_cameos_state_raw, list):
+            existing_cameos_state_raw = []
+        existing_cameos_state = _sanitize_cameo_list(existing_cameos_state_raw)
+
+        # Determine badge triggers from request + heuristics
+        badge_triggers: Set[str] = set(request.badgeEvents or [])
+        story_text = str(result.get("story") or "")
+        lowered_story = story_text.lower()
+
+        if any(keyword in lowered_story for keyword in DISCOVERY_KEYWORDS):
+            badge_triggers.add("trailblazer")
+
+        if "puzzle" in lowered_story and any(keyword in lowered_story for keyword in PUZZLE_SUCCESS_KEYWORDS):
+            badge_triggers.add("puzzle_master")
+
+        if result.get("storyPhase") == "completed" or (
+            result.get("isFinalPhase") and not previous_state.get("isFinalPhase")
+        ):
+            badge_triggers.add("finale_champion")
+
+        for item in result.get("items", []) or []:
+            try:
+                name = str(item.get("name", "")).lower()
+                rarity = str(item.get("rarity", "")).lower()
+                if rarity in {"legendary", "epic"} or any(keyword in name for keyword in TREASURE_KEYWORDS):
+                    badge_triggers.add("treasure_seeker")
+                    break
+            except AttributeError:
+                continue
+
+        badges: List[Dict[str, Any]] = []
+        unlocked_badges: List[Dict[str, Any]] = []
+
+        if badge_triggers or existing_badges_state is None:
+            badges, unlocked_badges = await resolve_badges(
+                request.player.name,
+                existing_badges_state,
+                badge_triggers,
+            )
+        else:
+            badges = _sanitize_badge_list(existing_badges_state) or []
+
+        if unlocked_badges:
+            result["unlockedBadges"] = unlocked_badges
+
+        result["cameos"] = existing_cameos_state
+
+        # --- Auto-save to MongoDB (best-effort) ---
+        try:
+            if db:
+                # Build compact story log entry
+                story_entry = {
+                    "t": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "text": result.get("story", ""),
+                    "type": "story"
+                }
+                previous_log = request.gameState.get("storyLog", []) if request.gameState else []
+                story_log = previous_log + [story_entry]
+                next_state: Dict[str, Any] = {
+                    "player": request.player.model_dump(by_alias=True),
+                    "genre": request.genre,
+                    "previousEvents": [e.model_dump() for e in (request.previousEvents or [])],
+                    "choice": request.choice,
+                    "story": result.get("story"),
+                    "choices": result.get("choices", []),
+                    "storyPhase": result.get("storyPhase") or (request.gameState or {}).get("storyPhase"),
+                    "turnCount": ((request.gameState or {}).get("turnCount", 0)) + 1,
+                    "combatEncounters": (request.gameState or {}).get("combatEncounters", 0),
+                    "combatEscapes": (request.gameState or {}).get("combatEscapes", 0),
+                    "isAfterCombat": False,
+                    "isFinalPhase": result.get("isFinalPhase", (request.gameState or {}).get("isFinalPhase", False)),
+                    "puzzle": result.get("puzzle"),
+                    "questProgress": result.get("questProgress", (request.gameState or {}).get("questProgress")),
+                    "activeQuest": request.activeQuest,
+                    "storyLog": story_log,
+                    "badges": badges,
+                    "cameos": existing_cameos_state,
+                }
+                now = datetime.datetime.now(datetime.timezone.utc)
+                await db.saves.update_one(
+                    {"playerId": request.player.name, "saveSlot": 1},
+                    {
+                        "$setOnInsert": {
+                            "createdAt": now,
+                            "schemaVersion": 1,
+                        },
+                        "$set": {
+                            "playerId": request.player.name,
+                            "saveSlot": 1,
+                            "saveName": "AutoSave",
+                            "gameState": next_state,
+                            "storyLog": story_log,
+                            "updatedAt": now,
+                            "deletedAt": None,
+                            "badges": badges,
+                            "cameos": existing_cameos_state,
+                        },
+                    },
+                    upsert=True,
+                )
+        except Exception as autosave_err:
+            logger.warning(f"Autosave failed in /api/story: {autosave_err}")
+
         return result
     except Exception as e:
         logger.error(f"Error in /api/story endpoint: {e}")
@@ -953,6 +1285,86 @@ async def api_process_combat(request: CombatRequest):
             request.action,
             request.itemId
         )
+        badge_triggers: Set[str] = set(request.badgeEvents or [])
+        rewards = result.get("rewards") or {}
+        for item in (rewards.get("items") or []):
+            try:
+                name = str(item.get("name", "")).lower()
+                rarity = str(item.get("rarity", "")).lower()
+                if rarity in {"legendary", "epic"} or any(keyword in name for keyword in TREASURE_KEYWORDS):
+                    badge_triggers.add("treasure_seeker")
+                    break
+            except AttributeError:
+                continue
+
+        # --- Auto-save a combat turn (best-effort) ---
+        try:
+            if db:
+                now = datetime.datetime.now(datetime.timezone.utc)
+                combat_entry = {
+                    "t": now.isoformat(),
+                    "text": "Combat turn processed",
+                    "type": "combat",
+                    "meta": {
+                        "action": request.action,
+                        "playerDamage": result.get("playerDamage"),
+                        "enemyDamage": result.get("enemyDamage"),
+                        "victory": result.get("victory"),
+                        "defeat": result.get("defeat"),
+                    },
+                }
+                existing = await db.saves.find_one({"playerId": request.player.name, "saveSlot": 1})
+                existing_log = existing.get("storyLog", []) if existing else []
+                story_log = existing_log + [combat_entry]
+                existing_badges_state = None
+                if existing:
+                    existing_badges_state = existing.get("badges") or (existing.get("gameState", {}) or {}).get("badges")
+                existing_cameos_state = _sanitize_cameo_list(
+                    (existing or {}).get("cameos")
+                    or ((existing or {}).get("gameState", {}) or {}).get("cameos")
+                )
+
+                badges, unlocked_badges = await resolve_badges(
+                    request.player.name,
+                    existing_badges_state,
+                    badge_triggers,
+                )
+
+                if unlocked_badges:
+                    result.setdefault("unlockedBadges", []).extend(unlocked_badges)
+
+                result["cameos"] = existing_cameos_state
+
+                next_state = dict((existing or {}).get("gameState", {}) or {})
+                next_state.update({
+                    "player": request.player.model_dump(by_alias=True),
+                    "badges": badges,
+                    "cameos": existing_cameos_state,
+                })
+                await db.saves.update_one(
+                    {"playerId": request.player.name, "saveSlot": 1},
+                    {
+                        "$setOnInsert": {
+                            "createdAt": now,
+                            "schemaVersion": 1,
+                        },
+                        "$set": {
+                            "playerId": request.player.name,
+                            "saveSlot": 1,
+                            "saveName": "AutoSave",
+                            "gameState": next_state,
+                            "storyLog": story_log,
+                            "updatedAt": now,
+                            "deletedAt": None,
+                            "badges": badges,
+                            "cameos": existing_cameos_state,
+                        },
+                    },
+                    upsert=True,
+                )
+        except Exception as autosave_err:
+            logger.warning(f"Autosave failed in /api/combat: {autosave_err}")
+
         return result
     except Exception as e:
         logger.error(f"Error in /api/combat endpoint: {e}")
@@ -966,12 +1378,28 @@ async def save_game(save_data: SaveData):
     try:
         # Convert Pydantic model to dict for MongoDB
         save_dict = save_data.model_dump(by_alias=True)
-        save_dict["timestamp"] = datetime.datetime.now(datetime.timezone.utc) # Add timestamp
+        now = datetime.datetime.now(datetime.timezone.utc)
 
         # Use playerId and saveSlot to uniquely identify the save, upserting it
         result = await db.saves.update_one(
             {"playerId": save_dict["playerId"], "saveSlot": save_dict["saveSlot"]},
-            {"$set": save_dict},
+            {
+                "$setOnInsert": {
+                    "createdAt": now,
+                },
+                "$set": {
+                    "playerId": save_dict["playerId"],
+                    "saveSlot": save_dict.get("saveSlot", 1),
+                    "saveName": save_dict.get("saveName", "AutoSave"),
+                    "gameState": save_dict.get("gameState", {}),
+                    "storyLog": save_dict.get("storyLog", []),
+                    "schemaVersion": save_dict.get("schemaVersion", 1),
+                    "updatedAt": now,
+                    "deletedAt": None,
+                    "badges": save_dict.get("badges", []),
+                    "cameos": save_dict.get("cameos", []),
+                }
+            },
             upsert=True
         )
 
@@ -979,18 +1407,12 @@ async def save_game(save_data: SaveData):
             save_id = str(result.upserted_id)
             logger.info(f"Game saved successfully with new ID: {save_id}")
             return {"success": True, "saveId": save_id}
-        elif result.modified_count > 0:
-             # Find the existing document to get its ID if needed, though not strictly necessary for confirmation
-             existing_save = await db.saves.find_one({"playerId": save_dict["playerId"], "saveSlot": save_dict["saveSlot"]})
-             save_id = str(existing_save["_id"]) if existing_save else "unknown (updated)"
-             logger.info(f"Game save updated successfully for slot: {save_data.saveSlot}, Player: {save_data.playerId}")
-             return {"success": True, "saveId": save_id} # Return existing ID or confirmation
         else:
-             logger.warning("Save operation reported no changes.")
-             # Might happen if data is identical, still consider it success
-             existing_save = await db.saves.find_one({"playerId": save_dict["playerId"], "saveSlot": save_dict["saveSlot"]})
-             save_id = str(existing_save["_id"]) if existing_save else "unknown (no change)"
-             return {"success": True, "saveId": save_id}
+            # Return existing document ID
+            existing_save = await db.saves.find_one({"playerId": save_dict["playerId"], "saveSlot": save_dict["saveSlot"]})
+            save_id = str(existing_save["_id"]) if existing_save else "unknown"
+            logger.info(f"Game save upserted for slot: {save_data.saveSlot}, Player: {save_data.playerId}")
+            return {"success": True, "saveId": save_id}
 
     except Exception as e:
         logger.error(f"Error saving game: {e}")
@@ -1009,11 +1431,11 @@ async def get_saves(player_id: str):
     if not db:
         raise HTTPException(status_code=503, detail="Database connection not available.")
     try:
-        saves_cursor = db.saves.find({"playerId": player_id}).sort("timestamp", -1) # Sort by most recent
+        saves_cursor = db.saves.find({"playerId": player_id, "deletedAt": None}).sort("updatedAt", -1)
         saves = await saves_cursor.to_list(length=None) # Fetch all saves for the player
         # Return only essential info for the list, not the full gameState
         save_list = [
-            {"saveId": str(s["_id"]), "name": s.get("saveName", f"Slot {s.get('saveSlot', '?')}"), "timestamp": s.get("timestamp")}
+            {"saveId": str(s.get("_id")), "name": s.get("saveName", f"Slot {s.get('saveSlot', '?')}") , "updatedAt": s.get("updatedAt"), "saveSlot": s.get("saveSlot", 1)}
             for s in saves
         ]
         return save_list
@@ -1041,6 +1463,10 @@ async def load_game(save_id: str):
         if not loaded_state:
              raise HTTPException(status_code=404, detail="Save data is corrupt or missing gameState.")
 
+        if isinstance(loaded_state, dict):
+            loaded_state["badges"] = save.get("badges", loaded_state.get("badges", []))
+            loaded_state["cameos"] = save.get("cameos", loaded_state.get("cameos", []))
+
         logger.info(f"Game loaded successfully for save ID: {save_id}")
         return loaded_state # Return only the game state
     except HTTPException as e:
@@ -1050,6 +1476,187 @@ async def load_game(save_id: str):
         logger.error(f"Error loading game for save ID {save_id}: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load game: {str(e)}")
 
+@app.get("/api/load/by-name")
+async def load_by_name(name: str):
+    """Load latest autosave for a player by name."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+
+    try:
+        save = await db.saves.find_one({"playerId": name, "deletedAt": None}, sort=[("updatedAt", DESCENDING)])
+        if not save:
+            raise HTTPException(status_code=404, detail="No saves found for player.")
+        state = save.get("gameState")
+        if not state:
+            raise HTTPException(status_code=404, detail="Save data missing gameState.")
+        if isinstance(state, dict):
+            state["badges"] = save.get("badges", state.get("badges", []))
+            state["cameos"] = save.get("cameos", state.get("cameos", []))
+        return state
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error loading by name '{name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to load by name: {str(e)}")
+
+
+@app.patch("/api/saves/{save_id}")
+async def rename_save(save_id: str, body: RenameSaveRequest):
+    """Rename a specific save slot."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+
+    try:
+        obj_id = ObjectId(save_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid save ID format.")
+
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        result = await db.saves.update_one(
+            {"_id": obj_id},
+            {"$set": {"saveName": body.saveName, "updatedAt": now}}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Save not found.")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error renaming save {save_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to rename save: {str(e)}")
+
+
+@app.delete("/api/saves/{save_id}")
+async def delete_save(save_id: str):
+    """Soft delete a save by its ID (sets deletedAt)."""
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+
+    try:
+        obj_id = ObjectId(save_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid save ID format.")
+
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        result = await db.saves.update_one(
+            {"_id": obj_id},
+            {"$set": {"deletedAt": now, "updatedAt": now}}
+        )
+        if result.matched_count == 0:
+            raise HTTPException(status_code=404, detail="Save not found.")
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting save {save_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete save: {str(e)}")
+
+
+@app.post("/api/cameo/invite")
+async def create_cameo_invite(request: CameoInviteRequest):
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = now + datetime.timedelta(minutes=request.expiresInMinutes or 120)
+
+    cameo_payload = request.cameoPlayer.model_dump(by_alias=True)
+
+    # Attempt to generate a unique invite code
+    for _ in range(5):
+        code = generate_cameo_code()
+        try:
+            await db.cameo_invites.insert_one(
+                {
+                    "code": code,
+                    "playerId": request.playerId,
+                    "guest": cameo_payload,
+                    "message": request.personalMessage,
+                    "status": "active",
+                    "createdAt": now,
+                    "expiresAt": expires_at,
+                }
+            )
+            return {
+                "code": code,
+                "expiresAt": expires_at.isoformat(),
+                "guest": cameo_payload,
+                "message": request.personalMessage,
+            }
+        except Exception as e:
+            # Retry on duplicate key (code collision)
+            if "E11000" not in str(e):
+                logger.error(f"Failed to create cameo invite for {request.playerId}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to create cameo invite")
+
+    raise HTTPException(status_code=500, detail="Unable to allocate cameo invite code. Please try again.")
+
+
+@app.post("/api/cameo/accept")
+async def accept_cameo_invite(request: CameoAcceptRequest):
+    if not db:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+
+    code = request.inviteCode.strip().upper()
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    invite = await db.cameo_invites.find_one({"code": code})
+    if not invite:
+        raise HTTPException(status_code=404, detail="Invite code not found.")
+
+    if invite.get("status") == "used":
+        raise HTTPException(status_code=409, detail="Invite code already used.")
+
+    expires_at = invite.get("expiresAt")
+    if expires_at and isinstance(expires_at, datetime.datetime) and expires_at < now:
+        await db.cameo_invites.update_one({"_id": invite["_id"]}, {"$set": {"status": "expired"}})
+        raise HTTPException(status_code=410, detail="Invite code expired.")
+
+    cameo_entry = {
+        "code": code,
+        "hostPlayerId": invite.get("playerId"),
+        "guest": invite.get("guest"),
+        "message": invite.get("message"),
+        "joinedAt": now.isoformat(),
+        "status": "active",
+    }
+
+    # Merge cameo into player save
+    try:
+        existing = await db.saves.find_one({"playerId": request.playerId, "saveSlot": 1})
+        cameos = _sanitize_cameo_list((existing or {}).get("cameos"))
+        cameos.append(cameo_entry)
+
+        await db.saves.update_one(
+            {"playerId": request.playerId, "saveSlot": 1},
+            {
+                "$setOnInsert": {
+                    "createdAt": now,
+                    "schemaVersion": 1,
+                },
+                "$set": {
+                    "updatedAt": now,
+                    "deletedAt": None,
+                    "cameos": cameos,
+                    "gameState.cameos": cameos,
+                },
+            },
+            upsert=True,
+        )
+
+        await db.cameo_invites.update_one(
+            {"_id": invite["_id"]},
+            {"$set": {"status": "used", "consumedBy": request.playerId, "consumedAt": now}},
+        )
+
+        return {"cameo": cameo_entry}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to accept cameo invite {code}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to attach cameo to save")
 
 # --- Root Endpoint ---
 @app.get("/")

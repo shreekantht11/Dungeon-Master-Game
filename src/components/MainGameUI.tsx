@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
+import type { Badge } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -16,6 +17,9 @@ import CharacterSheet from '@/components/CharacterSheet';
 import WorldMapModal from '@/components/WorldMapModal';
 import Statistics from '@/components/Statistics';
 import ShareModal from '@/components/ShareModal';
+import TrophyRoom from '@/components/TrophyRoom';
+import CameoInviteModal from '@/components/CameoInviteModal';
+import CameoJoinModal from '@/components/CameoJoinModal';
 import Tutorial from '@/components/Tutorial';
 import { AchievementGallery } from '@/components/AchievementNotification';
 import { storage, setupAutoSave } from '@/utils/storage';
@@ -40,8 +44,11 @@ import {
   BarChart3,
   Share2,
   Trophy,
+  Award,
   Target,
   User,
+  UserPlus,
+  Users,
   Activity,
   Wifi,
   WifiOff,
@@ -71,6 +78,12 @@ const MainGameUI = () => {
     updatePlayer,
     setScreen,
     resetGame,
+    badges,
+    setBadges,
+    unlockBadges,
+    cameos,
+    setCameos,
+    addCameo,
   } = useGameStore();
 
   const { t } = useTranslation();
@@ -82,6 +95,9 @@ const MainGameUI = () => {
   const [showStatistics, setShowStatistics] = useState(false);
   const [showShare, setShowShare] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
+  const [showTrophyRoom, setShowTrophyRoom] = useState(false);
+  const [showCameoInvite, setShowCameoInvite] = useState(false);
+  const [showCameoJoin, setShowCameoJoin] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
   const [aiStatus, setAiStatus] = useState<'active' | 'offline' | 'idle'>('idle');
@@ -111,6 +127,8 @@ const MainGameUI = () => {
         setDisplayedText(''); // Clear story text to show loading message
         setLoadingStory(true);
         setAiStatus('active');
+        setBadges([]);
+        setCameos([]);
         const request = {
           player,
           genre: genre || 'Fantasy',
@@ -134,6 +152,24 @@ const MainGameUI = () => {
           addStoryEvent({ text: storyText, type: 'story' });
         }
         
+        if (Array.isArray(res.unlockedBadges) && res.unlockedBadges.length > 0) {
+          const newlyUnlocked = res.unlockedBadges as Badge[];
+          unlockBadges(newlyUnlocked);
+          newlyUnlocked.forEach((badge) => {
+            toast.success(`🏅 ${badge.title}`, {
+              description: badge.description,
+            });
+          });
+        }
+
+        if (Array.isArray(res.badges)) {
+          setBadges(res.badges as Badge[]);
+        }
+
+        if (Array.isArray((res as any).cameos)) {
+          setCameos((res as any).cameos as any);
+        }
+
         if (res.choices && Array.isArray(res.choices)) {
           // Filter and ensure all choices are strings (not objects)
           const validChoices = res.choices
@@ -243,6 +279,8 @@ const MainGameUI = () => {
           combatEscapes: gameState.combatEscapes || 0,
           isAfterCombat: gameState.isAfterCombat,
           isFinalPhase: gameState.isFinalPhase,
+          badges,
+          cameos,
         },
         activeQuest: activeQuest,
       };
@@ -274,6 +312,14 @@ const MainGameUI = () => {
         setPlayerChoices(validChoices.length > 0 ? validChoices : ['Continue', 'Explore', 'Investigate']);
       } else {
         setPlayerChoices([]);
+      }
+
+      if (Array.isArray((res as any).badges)) {
+        setBadges((res as any).badges as Badge[]);
+      }
+
+      if (Array.isArray((res as any).cameos)) {
+        setCameos((res as any).cameos as any);
       }
 
       // Update quest progress based on AI-driven progress (from API response)
@@ -328,6 +374,39 @@ const MainGameUI = () => {
       // Add any items returned
       if (res.items && Array.isArray(res.items)) {
         res.items.forEach((it: any) => addItem(it));
+      }
+
+      // Auto-save to backend (best-effort)
+      try {
+        const latestState = useGameStore.getState();
+        await api.saveGame({
+          playerId: latestState.player?.name,
+          saveSlot: 1,
+          saveName: 'AutoSave',
+          gameState: {
+            player: latestState.player,
+            genre: latestState.genre,
+            story: latestState.currentStory,
+            choices: latestState.playerChoices,
+            storyPhase: latestState.gameState.storyPhase,
+            turnCount: latestState.gameState.turnCount,
+            combatEncounters: latestState.gameState.combatEncounters,
+            combatEscapes: latestState.gameState.combatEscapes,
+            isAfterCombat: latestState.gameState.isAfterCombat,
+            isFinalPhase: latestState.gameState.isFinalPhase,
+            puzzle: latestState.currentPuzzle,
+            activeQuest: activeQuest,
+            storyLog: latestState.storyLog,
+            badges: latestState.badges,
+            cameos: latestState.cameos,
+          },
+          storyLog: latestState.storyLog,
+          badges: latestState.badges,
+          cameos: latestState.cameos,
+          schemaVersion: 1,
+        });
+      } catch (saveErr) {
+        console.warn('Autosave failed', saveErr);
       }
     } catch (error) {
       console.error('Error generating story:', error);
@@ -412,6 +491,19 @@ const MainGameUI = () => {
       <AchievementGallery
         isOpen={showAchievements}
         onClose={() => setShowAchievements(false)}
+      />
+      <TrophyRoom
+        open={showTrophyRoom}
+        onOpenChange={setShowTrophyRoom}
+        badges={badges}
+      />
+      <CameoInviteModal
+        open={showCameoInvite}
+        onOpenChange={setShowCameoInvite}
+      />
+      <CameoJoinModal
+        open={showCameoJoin}
+        onOpenChange={setShowCameoJoin}
       />
       <WorldMapModal
         isOpen={showWorldMap}
@@ -520,6 +612,32 @@ const MainGameUI = () => {
                   )}
                 </div>
               )}
+
+              {cameos.length > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-3 py-1.5"
+                  aria-label="Active cameo companions"
+                >
+                  <Users className="w-4 h-4 text-primary" />
+                  <span className="text-xs font-semibold uppercase tracking-wide text-primary">
+                    Cameos
+                  </span>
+                  {cameos.slice(0, 3).map((cameo) => (
+                    <span
+                      key={cameo.code}
+                      className="rounded-full border border-primary/40 bg-background/90 px-2 py-0.5 text-xs font-medium text-foreground"
+                      aria-label={`Cameo ally ${cameo.guest?.name || 'Unnamed hero'}`}
+                    >
+                      {cameo.guest?.name || 'Ally'}
+                    </span>
+                  ))}
+                  {cameos.length > 3 && (
+                    <span className="text-xs text-muted-foreground">
+                      +{cameos.length - 3}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Quick Actions */}
@@ -564,10 +682,26 @@ const MainGameUI = () => {
                 variant="outline"
                 size="icon"
                 className="hover:bg-primary/10"
+                onClick={() => setShowTrophyRoom(true)}
+                title="Trophy Room"
+              >
+                <span className="relative inline-flex">
+                  <Trophy className="w-5 h-5" />
+                  {badges.length > 0 && (
+                    <span className="absolute -top-1 -right-1 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-primary text-[10px] font-bold text-primary-foreground">
+                      {badges.length}
+                    </span>
+                  )}
+                </span>
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
                 onClick={() => setShowAchievements(true)}
                 title={t('game.achievements')}
               >
-                <Trophy className="w-5 h-5" />
+                <Award className="w-5 h-5" />
               </Button>
               <Button
                 variant="outline"
@@ -577,6 +711,24 @@ const MainGameUI = () => {
                 title="Share"
               >
                 <Share2 className="w-5 h-5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
+                onClick={() => setShowCameoInvite(true)}
+                title="Invite Cameo"
+              >
+                <UserPlus className="w-5 h-5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
+                onClick={() => setShowCameoJoin(true)}
+                title="Join with Code"
+              >
+                <Users className="w-5 h-5" />
               </Button>
               <Button
                 variant="outline"

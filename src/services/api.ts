@@ -14,6 +14,8 @@ interface StoryRequest {
     combatEscapes?: number;
     isAfterCombat?: boolean;
     isFinalPhase?: boolean;
+    badges?: BadgePayload[];
+    cameos?: CameoPayload[];
   };
   multiplayer?: {
     otherPlayer?: any;
@@ -21,6 +23,7 @@ interface StoryRequest {
     bothSurvivedFirstFight?: boolean;
   };
   activeQuest?: any;
+  badgeEvents?: string[];
 }
 
 interface StoryResponse {
@@ -43,6 +46,9 @@ interface StoryResponse {
   };
   questProgress?: number; // Quest completion percentage (0-100)
   isFallback?: boolean;
+  badges?: BadgePayload[];
+  unlockedBadges?: BadgePayload[];
+  cameos?: CameoPayload[];
 }
 
 interface InitializeResponse {
@@ -59,6 +65,7 @@ interface CombatRequest {
   enemy: Enemy;
   action: 'attack' | 'defend' | 'use-item' | 'run';
   itemId?: string;
+  badgeEvents?: string[];
 }
 
 interface CombatResponse {
@@ -74,6 +81,26 @@ interface CombatResponse {
     items: Item[];
     gold: number;
   };
+  badges?: BadgePayload[];
+  unlockedBadges?: BadgePayload[];
+  cameos?: CameoPayload[];
+}
+
+interface BadgePayload {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  earnedAt: string;
+}
+
+interface CameoPayload {
+  code: string;
+  hostPlayerId?: string;
+  guest: any;
+  message?: string;
+  joinedAt?: string;
+  status?: string;
 }
 
 class APIError extends Error {
@@ -232,7 +259,7 @@ export const api = {
   async loadGame(saveId: string): Promise<any> {
     try {
       const response = await fetchWithRetry(
-        `${API_BASE_URL}/api/save/${saveId}`,
+        `${API_BASE_URL}/api/load/${saveId}`,
         { method: 'GET' }
       );
       return await response.json();
@@ -253,6 +280,84 @@ export const api = {
     } catch (error) {
       console.error('Failed to fetch saves:', error);
       return [];
+    }
+  },
+
+  // Load latest save by player name
+  async loadGameByName(name: string): Promise<any> {
+    try {
+      const response = await fetchWithRetry(
+        `${API_BASE_URL}/api/load/by-name?name=${encodeURIComponent(name)}`,
+        { method: 'GET' }
+      );
+      return await response.json();
+    } catch (error) {
+      console.error('Load by name failed:', error);
+      throw error;
+    }
+  },
+
+  // Rename a save by id
+  async renameSave(saveId: string, saveName: string): Promise<{ success: boolean }> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/saves/${saveId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ saveName }),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Rename save failed:', error);
+      throw error;
+    }
+  },
+
+  // Delete a save by id (soft delete)
+  async deleteSave(saveId: string): Promise<{ success: boolean }> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/saves/${saveId}`, {
+        method: 'DELETE',
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Delete save failed:', error);
+      throw error;
+    }
+  },
+
+  async createCameoInvite(payload: {
+    playerId: string;
+    cameoPlayer: Player;
+    personalMessage?: string;
+    expiresInMinutes?: number;
+  }): Promise<{ code: string; expiresAt: string; guest: Player; message?: string }> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/cameo/invite`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Create cameo invite failed:', error);
+      throw error;
+    }
+  },
+
+  async acceptCameoInvite(payload: {
+    playerId: string;
+    inviteCode: string;
+  }): Promise<{ cameo: CameoPayload }> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/cameo/accept`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Accept cameo invite failed:', error);
+      throw error;
     }
   },
 };

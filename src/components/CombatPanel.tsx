@@ -8,7 +8,7 @@ import { Sword, Shield, Heart, Sparkles, Zap } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/services/api';
 import { useTranslation } from 'react-i18next';
-import { Item } from '@/store/gameStore';
+import type { Item, Badge } from '@/store/gameStore';
 import { toast as sonnerToast } from 'sonner';
 
 const CombatPanel = () => {
@@ -33,6 +33,9 @@ const CombatPanel = () => {
     updateStory,
     setPlayerChoices,
     addStoryEvent,
+    setBadges,
+    unlockBadges,
+    setCameos,
   } = useGameStore();
   
   // Get weapons from inventory
@@ -57,6 +60,8 @@ const CombatPanel = () => {
           combatEncounters: currentState.gameState.combatEncounters || 0,
           isAfterCombat: true,
           isFinalPhase: currentState.gameState.isFinalPhase,
+          badges: currentState.badges,
+          cameos: currentState.cameos,
         },
         activeQuest: activeQuest,
       };
@@ -76,6 +81,56 @@ const CombatPanel = () => {
         isAfterCombat: false,
         storyPhase: res.storyPhase || 'exploration',
       });
+
+      if (Array.isArray(res.unlockedBadges) && res.unlockedBadges.length > 0) {
+        const newlyUnlocked = res.unlockedBadges as Badge[];
+        unlockBadges(newlyUnlocked);
+        newlyUnlocked.forEach((badge) => {
+          sonnerToast.success(`🏅 ${badge.title}`, {
+            description: badge.description,
+          });
+        });
+      }
+
+      if (Array.isArray(res.badges)) {
+        setBadges(res.badges as Badge[]);
+      }
+
+      if (Array.isArray((res as any).cameos)) {
+        setCameos((res as any).cameos as any);
+      }
+
+      // Auto-save after resuming story from combat
+      try {
+        const latest = useGameStore.getState();
+        await api.saveGame({
+          playerId: latest.player?.name,
+          saveSlot: 1,
+          saveName: 'AutoSave',
+          gameState: {
+            player: latest.player,
+            genre: latest.genre,
+            story: latest.currentStory,
+            choices: latest.playerChoices,
+            storyPhase: latest.gameState.storyPhase,
+            turnCount: latest.gameState.turnCount,
+            combatEncounters: latest.gameState.combatEncounters,
+            combatEscapes: latest.gameState.combatEscapes,
+            isAfterCombat: latest.gameState.isAfterCombat,
+            isFinalPhase: latest.gameState.isFinalPhase,
+            puzzle: latest.currentPuzzle,
+            storyLog: latest.storyLog,
+            badges: latest.badges,
+            cameos: latest.cameos,
+          },
+          storyLog: latest.storyLog,
+          badges: latest.badges,
+          cameos: latest.cameos,
+          schemaVersion: 1,
+        });
+      } catch (e) {
+        console.warn('Autosave failed after combat', e);
+      }
     } catch (error) {
       console.error('Failed to continue story after combat:', error);
       // Fallback story
@@ -138,12 +193,26 @@ const CombatPanel = () => {
 
       // Update combat log INSTANTLY with real results (skip if weapon attack - already instant)
       if (!(action === 'attack' && itemId)) {
-        setCombatLog(prev => [...prev, ...result.combatLog].slice(-5));
+      setCombatLog(prev => [...prev, ...result.combatLog].slice(-5));
       }
       
       // Update health INSTANTLY (this is the key - instant HP decrease)
       damageEnemy(result.enemyDamage);
       damagePlayer(result.playerDamage);
+
+      if (Array.isArray(result.unlockedBadges) && result.unlockedBadges.length > 0) {
+        const newlyUnlocked = result.unlockedBadges as Badge[];
+        unlockBadges(newlyUnlocked);
+        newlyUnlocked.forEach((badge) => {
+          sonnerToast.success(`🏅 ${badge.title}`, {
+            description: badge.description,
+          });
+        });
+      }
+
+      if (Array.isArray(result.badges)) {
+        setBadges(result.badges as Badge[]);
+      }
 
       // Check victory/defeat
       if (result.victory || result.enemyHealth <= 0) {
@@ -326,9 +395,9 @@ const CombatPanel = () => {
               className="gap-2"
               disabled={isProcessing}
             >
-              <Sword className="w-4 h-4" />
-              {t('actions.attack')}
-            </Button>
+            <Sword className="w-4 h-4" />
+            {t('actions.attack')}
+          </Button>
           )}
           <Button 
             onClick={() => handleAction('defend')} 

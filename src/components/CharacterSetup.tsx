@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
@@ -35,7 +35,14 @@ const CharacterSetup = () => {
   const [selectedClass, setSelectedClass] = useState<'Warrior' | 'Mage' | 'Rogue'>('Warrior');
   const [gender, setGender] = useState<'Male' | 'Female' | 'Other'>('Male');
   
-  const { createCharacter, setScreen } = useGameStore();
+  const { createCharacter, setScreen, authUser } = useGameStore();
+
+  // Auto-fill name from Google sign-in if available
+  useEffect(() => {
+    if (authUser?.name && !name) {
+      setName(authUser.name);
+    }
+  }, [authUser?.name]);
 
   const handleCreate = () => {
     if (!name.trim()) return;
@@ -53,7 +60,6 @@ const CharacterSetup = () => {
 
   return (
     <div className="relative min-h-screen overflow-hidden">
-      {/* Background */}
       <div
         className="absolute inset-0 z-0 bg-cover bg-center"
         style={{ backgroundImage: `url(${desertBg})` }}
@@ -61,28 +67,27 @@ const CharacterSetup = () => {
         <div className="absolute inset-0 bg-background/85" />
       </div>
 
-      {/* Content */}
-      <div className="relative z-10 container mx-auto px-4 py-12 flex items-center justify-center min-h-screen">
+      <div className="relative z-10 flex min-h-screen items-center justify-center px-6 py-10">
         <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
+          initial={{ opacity: 0, scale: 0.94 }}
           animate={{ opacity: 1, scale: 1 }}
-          transition={{ duration: 0.5 }}
-          className="w-full max-w-4xl"
+          transition={{ duration: 0.45 }}
+          className="w-full max-w-5xl"
         >
-          <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-8">
-            <div className="grid md:grid-cols-2 gap-8">
+          <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-10">
+            <div className="grid gap-10 md:grid-cols-2">
               {/* Character Portrait */}
               <motion.div
-                initial={{ x: -50, opacity: 0 }}
+                initial={{ x: -40, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
-                transition={{ delay: 0.2 }}
-                className="space-y-4"
+                transition={{ delay: 0.15 }}
+                className="flex flex-col gap-5"
               >
-                <h2 className="text-3xl font-fantasy gold-shimmer">
+                <h2 className="text-3xl font-fantasy gold-shimmer text-glow">
                   Create Your Hero
                 </h2>
                 
-                <div className="relative aspect-square rounded-lg overflow-hidden border-4 border-primary/50">
+                <div className="relative aspect-square rounded-xl overflow-hidden border-4 border-primary/50 shadow-xl">
                   <img
                     src={warriorPortrait}
                     alt="Character Portrait"
@@ -102,10 +107,10 @@ const CharacterSetup = () => {
 
               {/* Character Form */}
               <motion.div
-                initial={{ x: 50, opacity: 0 }}
+                initial={{ x: 40, opacity: 0 }}
                 animate={{ x: 0, opacity: 1 }}
-                transition={{ delay: 0.3 }}
-                className="space-y-6"
+                transition={{ delay: 0.2 }}
+                className="flex flex-col gap-6"
               >
                 {/* Name */}
                 <div className="space-y-2">

@@ -15,6 +15,7 @@ const Settings = () => {
     musicEnabled,
     updateSettings,
     setScreen,
+    gameStarted,
   } = useGameStore();
 
   return (
@@ -27,7 +28,7 @@ const Settings = () => {
         >
           <Button
             variant="ghost"
-            onClick={() => setScreen('intro')}
+            onClick={() => setScreen(gameStarted ? 'game' : 'intro')}
             className="mb-6 hover:bg-primary/10"
           >
             <ArrowLeft className="mr-2" />

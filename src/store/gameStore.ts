@@ -18,6 +18,43 @@ export interface Player {
   };
 }
 
+export interface Badge {
+  id: string;
+  title: string;
+  description: string;
+  icon: string;
+  earnedAt: string;
+}
+
+export interface CameoGuest {
+  name: string;
+  class: Player['class'];
+  gender: Player['gender'];
+  level: number;
+  health: number;
+  maxHealth: number;
+  xp: number;
+  maxXp: number;
+  stats: Player['stats'];
+  [key: string]: any;
+}
+
+export interface CameoEntry {
+  code: string;
+  hostPlayerId?: string;
+  guest: CameoGuest;
+  message?: string;
+  joinedAt?: string;
+  status?: string;
+}
+
+export interface AuthUser {
+  name: string;
+  email?: string;
+  picture?: string;
+  token?: string;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -64,6 +101,15 @@ interface GameState {
   // Puzzle
   currentPuzzle: any | null;
   setPuzzle: (puzzle: any) => void;
+  badges: Badge[];
+  setBadges: (badges: Badge[]) => void;
+  unlockBadges: (badges: Badge[]) => void;
+  cameos: CameoEntry[];
+  setCameos: (cameos: CameoEntry[]) => void;
+  addCameo: (cameo: CameoEntry) => void;
+  authUser: AuthUser | null;
+  setAuthUser: (user: AuthUser | null) => void;
+  clearAuthUser: () => void;
   
   // Quests
   activeQuests: any[];
@@ -122,6 +168,9 @@ const initialState = {
   inCombat: false,
   currentEnemy: null,
   currentPuzzle: null,
+  badges: [] as Badge[],
+  cameos: [] as CameoEntry[],
+  authUser: null,
   activeQuests: [],
   completedQuests: [],
   gameState: {
@@ -240,6 +289,40 @@ export const useGameStore = create<GameState>((set) => ({
   endCombat: () => set({ inCombat: false, currentEnemy: null }),
   
   setPuzzle: (puzzle) => set({ currentPuzzle: puzzle }),
+
+  setBadges: (badges) => set({ badges }),
+
+  unlockBadges: (badges) =>
+    set((state) => {
+      const existingIds = new Set(state.badges.map((b) => b.id));
+      const newBadges = (badges || []).filter((badge) => badge && !existingIds.has(badge.id));
+      if (newBadges.length === 0) return state;
+      return {
+        badges: [...state.badges, ...newBadges],
+      };
+    }),
+
+  setCameos: (cameos) => set({ cameos: cameos || [] }),
+
+  addCameo: (cameo) =>
+    set((state) => {
+      if (!cameo) return state;
+      const exists = state.cameos.some((entry) => entry.code === cameo.code);
+      if (exists) {
+        return {
+          cameos: state.cameos.map((entry) =>
+            entry.code === cameo.code ? { ...entry, ...cameo } : entry
+          ),
+        };
+      }
+      return {
+        cameos: [...state.cameos, cameo],
+      };
+    }),
+
+  setAuthUser: (user) => set({ authUser: user }),
+
+  clearAuthUser: () => set({ authUser: null }),
   
   damageEnemy: (damage) =>
     set((state) => {
@@ -326,5 +409,15 @@ export const useGameStore = create<GameState>((set) => ({
       };
     }),
   
-  resetGame: () => set(initialState),
+  resetGame: () =>
+    set(() => ({
+      ...initialState,
+      storyLog: [],
+      playerChoices: [],
+      badges: [] as Badge[],
+      cameos: [] as CameoEntry[],
+      activeQuests: [],
+      completedQuests: [],
+      currentPuzzle: null,
+    })),
 }));
