@@ -61,6 +61,10 @@ interface GameState {
   inCombat: boolean;
   currentEnemy: Enemy | null;
   
+  // Puzzle
+  currentPuzzle: any | null;
+  setPuzzle: (puzzle: any) => void;
+  
   // Quests
   activeQuests: any[];
   completedQuests: any[];
@@ -72,6 +76,7 @@ interface GameState {
     turnCount: number;
     storyPhase: string;
     combatEncounters: number;
+    combatEscapes: number; // Track how many times player escaped from combat
     isAfterCombat: boolean;
     isFinalPhase: boolean;
     isInitialized: boolean;
@@ -116,12 +121,14 @@ const initialState = {
   playerChoices: [],
   inCombat: false,
   currentEnemy: null,
+  currentPuzzle: null,
   activeQuests: [],
   completedQuests: [],
   gameState: {
     turnCount: 0,
     storyPhase: 'exploration',
     combatEncounters: 0,
+    combatEscapes: 0,
     isAfterCombat: false,
     isFinalPhase: false,
     isInitialized: false,
@@ -164,9 +171,57 @@ export const useGameStore = create<GameState>((set) => ({
   },
   
   updatePlayer: (updates) =>
-    set((state) => ({
-      player: state.player ? { ...state.player, ...updates } : null,
-    })),
+    set((state) => {
+      if (!state.player) return state;
+      
+      const updatedPlayer = { ...state.player, ...updates };
+      
+      // Check for level up when XP is updated (handle multiple level ups)
+      if ('xp' in updates) {
+        let finalPlayer = updatedPlayer;
+        let levelUps = 0;
+        
+        // Handle multiple level ups if XP is very high
+        while (finalPlayer.xp >= finalPlayer.maxXp) {
+          levelUps++;
+          const newLevel = finalPlayer.level + 1;
+          const newMaxXp = Math.floor(finalPlayer.maxXp * 1.5); // Increase max XP by 50%
+          const newMaxHealth = Math.floor(finalPlayer.maxHealth * 1.2); // Increase health by 20%
+          const xpOverflow = finalPlayer.xp - finalPlayer.maxXp;
+          
+          finalPlayer = {
+            ...finalPlayer,
+            level: newLevel,
+            xp: xpOverflow,
+            maxXp: newMaxXp,
+            maxHealth: newMaxHealth,
+            health: newMaxHealth, // Full heal on level up
+            stats: {
+              ...finalPlayer.stats,
+              strength: finalPlayer.stats.strength + 2,
+              intelligence: finalPlayer.stats.intelligence + 2,
+              agility: finalPlayer.stats.agility + 2,
+            }
+          };
+        }
+        
+        // Add level up event if any level ups occurred
+        if (levelUps > 0) {
+          state.addStoryEvent({
+            text: `🎉 Level Up! You reached level ${finalPlayer.level}! (+${levelUps} level${levelUps > 1 ? 's' : ''})`,
+            type: 'level-up'
+          });
+          
+          return {
+            player: finalPlayer,
+          };
+        }
+      }
+      
+      return {
+        player: updatedPlayer,
+      };
+    }),
   
   addStoryEvent: (event) =>
     set((state) => ({
@@ -183,6 +238,8 @@ export const useGameStore = create<GameState>((set) => ({
   startCombat: (enemy) => set({ inCombat: true, currentEnemy: enemy }),
   
   endCombat: () => set({ inCombat: false, currentEnemy: null }),
+  
+  setPuzzle: (puzzle) => set({ currentPuzzle: puzzle }),
   
   damageEnemy: (damage) =>
     set((state) => {

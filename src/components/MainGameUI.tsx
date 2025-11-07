@@ -10,6 +10,7 @@ import dungeonBg from '@/assets/dungeon-bg.jpg';
 import AdventureLogModal from '@/components/AdventureLogModal';
 import InventoryModal from '@/components/InventoryModal';
 import CombatPanel from '@/components/CombatPanel';
+import PuzzlePanel from '@/components/PuzzlePanel';
 import QuestTracker from '@/components/QuestTracker';
 import CharacterSheet from '@/components/CharacterSheet';
 import WorldMapModal from '@/components/WorldMapModal';
@@ -41,6 +42,10 @@ import {
   Trophy,
   Target,
   User,
+  Activity,
+  Wifi,
+  WifiOff,
+  CheckCircle2,
 } from 'lucide-react';
 
 const MainGameUI = () => {
@@ -50,9 +55,11 @@ const MainGameUI = () => {
     playerChoices,
     inCombat,
     currentEnemy,
+    currentPuzzle,
     storyLog,
     genre,
     gameState,
+    activeQuests,
     updateStory,
     setPlayerChoices,
     addStoryEvent,
@@ -60,6 +67,8 @@ const MainGameUI = () => {
     addItem,
     addQuest,
     updateGameState,
+    setPuzzle,
+    updatePlayer,
     setScreen,
     resetGame,
   } = useGameStore();
@@ -75,6 +84,7 @@ const MainGameUI = () => {
   const [showAchievements, setShowAchievements] = useState(false);
   const [showTutorial, setShowTutorial] = useState(false);
   const [showMenu, setShowMenu] = useState(false);
+  const [aiStatus, setAiStatus] = useState<'active' | 'offline' | 'idle'>('idle');
   const [activeTab, setActiveTab] = useState('stats');
   const [loadingStory, setLoadingStory] = useState(false);
 
@@ -98,7 +108,9 @@ const MainGameUI = () => {
     
     const initializeGame = async () => {
       try {
+        setDisplayedText(''); // Clear story text to show loading message
         setLoadingStory(true);
+        setAiStatus('active');
         const request = {
           player,
           genre: genre || 'Fantasy',
@@ -108,13 +120,27 @@ const MainGameUI = () => {
         
         const res = await api.initializeGame(request as any);
         
+        // Check if using fallback (API service returns fallback on error)
+        if (res.isFallback) {
+          setAiStatus('offline');
+        } else {
+          setAiStatus('active');
+        }
+        
         if (res.story) {
-          updateStory(res.story);
-          addStoryEvent({ text: res.story, type: 'story' });
+          // Ensure story is a string, not an object
+          const storyText = typeof res.story === 'string' ? res.story : String(res.story || '');
+          updateStory(storyText);
+          addStoryEvent({ text: storyText, type: 'story' });
         }
         
         if (res.choices && Array.isArray(res.choices)) {
-          setPlayerChoices(res.choices);
+          // Filter and ensure all choices are strings (not objects)
+          const validChoices = res.choices
+            .filter((choice: any) => typeof choice === 'string')
+            .map((choice: string) => String(choice).trim())
+            .filter((choice: string) => choice.length > 0);
+          setPlayerChoices(validChoices.length > 0 ? validChoices : ['Continue', 'Explore', 'Investigate']);
         }
         
         if (res.quest) {
@@ -128,6 +154,7 @@ const MainGameUI = () => {
         updateGameState({ isInitialized: true, turnCount: 0 });
       } catch (error) {
         console.error('Failed to initialize game:', error);
+        setAiStatus('offline');
         // Fallback to basic story
         updateStory("Your adventure begins...");
         setPlayerChoices(['Explore', 'Investigate', 'Proceed']);
@@ -140,11 +167,25 @@ const MainGameUI = () => {
     initializeGame();
   }, [player, genre, gameState.isInitialized]);
 
-  // Display story instantly (no typewriter delay)
+  // Typewriter effect for story animation
   useEffect(() => {
     if (!currentStory) return;
-    setDisplayedText(currentStory);
-    setIsTyping(false);
+    
+    setIsTyping(true);
+    setDisplayedText('');
+    let index = 0;
+    
+    const interval = setInterval(() => {
+      if (index < currentStory.length) {
+        setDisplayedText((prev) => prev + currentStory[index]);
+        index++;
+      } else {
+        setIsTyping(false);
+        clearInterval(interval);
+      }
+    }, 20); // Faster typing speed (20ms per character)
+
+    return () => clearInterval(interval);
   }, [currentStory]);
 
   const handleChoice = async (choice: string) => {
@@ -152,13 +193,42 @@ const MainGameUI = () => {
     // Prevent concurrent requests
     if (loadingStory) return;
     
+    // Handle final puzzle answer
+    if (gameState.storyPhase === 'final-puzzle' && currentPuzzle) {
+      const isCorrect = choice.toLowerCase().includes(currentPuzzle.correctAnswer.toLowerCase()) || 
+                       currentPuzzle.correctAnswer.toLowerCase().includes(choice.toLowerCase());
+      
+      if (isCorrect) {
+        toast.success('🎉 Puzzle Solved! You Win!');
+        addStoryEvent({ text: 'You solved the puzzle and completed your quest!', type: 'story' });
+        updateGameState({ isFinalPhase: false, storyPhase: 'completed' });
+        setPuzzle(null);
+        // Give victory rewards
+        updatePlayer({ xp: player.xp + 500 });
+        return;
+      } else {
+        toast.error('❌ Wrong Answer! Game Over!');
+        addStoryEvent({ text: 'You failed to solve the puzzle. The adventure ends...', type: 'story' });
+        setTimeout(() => {
+          resetGame();
+          setScreen('intro');
+        }, 3000);
+        return;
+      }
+    }
+    
     // Immediate UI feedback - clear choices instantly
     setPlayerChoices([]);
+    setDisplayedText(''); // Clear story text to show loading message
     setLoadingStory(true);
+    setAiStatus('active');
     
     try {
       // Update turn count
       const newTurnCount = gameState.turnCount + 1;
+      
+      // Get active quest (first one if multiple)
+      const activeQuest = activeQuests.length > 0 ? activeQuests[0] : null;
       
       // Prepare request object with game state
       const request = {
@@ -170,31 +240,71 @@ const MainGameUI = () => {
           turnCount: newTurnCount,
           storyPhase: gameState.storyPhase,
           combatEncounters: gameState.combatEncounters,
+          combatEscapes: gameState.combatEscapes || 0,
           isAfterCombat: gameState.isAfterCombat,
           isFinalPhase: gameState.isFinalPhase,
         },
+        activeQuest: activeQuest,
       };
 
       // Call backend
       const res = await api.generateStory(request as any);
 
+      // Check if using fallback
+      if (res.isFallback) {
+        setAiStatus('offline');
+      } else {
+        setAiStatus('active');
+      }
+
       // Update story and choices instantly
       if (res.story) {
-        updateStory(res.story);
-        addStoryEvent({ text: res.story, type: 'story' });
+        // Ensure story is a string, not an object
+        const storyText = typeof res.story === 'string' ? res.story : String(res.story || '');
+        updateStory(storyText);
+        addStoryEvent({ text: storyText, type: 'story' });
       }
 
       if (res.choices && Array.isArray(res.choices)) {
-        setPlayerChoices(res.choices);
+        // Filter and ensure all choices are strings (not objects)
+        const validChoices = res.choices
+          .filter((choice: any) => typeof choice === 'string')
+          .map((choice: string) => String(choice).trim())
+          .filter((choice: string) => choice.length > 0);
+        setPlayerChoices(validChoices.length > 0 ? validChoices : ['Continue', 'Explore', 'Investigate']);
       } else {
         setPlayerChoices([]);
+      }
+
+      // Update quest progress based on AI-driven progress (from API response)
+      if (res.questProgress !== undefined && activeQuest && activeQuests.length > 0) {
+        const questIndex = activeQuests.findIndex(q => q.id === activeQuest.id);
+        if (questIndex !== -1) {
+          const quest = activeQuests[questIndex];
+          const updatedQuest = {
+            ...quest,
+            progress: res.questProgress,
+          };
+          // Update quest in store
+          const updatedQuests = [...activeQuests];
+          updatedQuests[questIndex] = updatedQuest;
+          useGameStore.setState({ activeQuests: updatedQuests });
+        }
+      }
+      
+      // Track combat escapes if player chose to hide/run
+      if (choice && (choice.toLowerCase().includes('hide') || choice.toLowerCase().includes('run') || 
+          choice.toLowerCase().includes('flee') || choice.toLowerCase().includes('escape'))) {
+        const currentEscapes = gameState.combatEscapes || 0;
+        updateGameState({ combatEscapes: currentEscapes + 1 });
       }
 
       // Update game state
       updateGameState({
         turnCount: newTurnCount,
-        storyPhase: res.storyPhase || newStoryPhase,
+        storyPhase: res.storyPhase || gameState.storyPhase,
         isAfterCombat: false,
+        isFinalPhase: res.isFinalPhase || gameState.isFinalPhase,
       });
 
       // If an enemy is returned, start combat
@@ -207,12 +317,21 @@ const MainGameUI = () => {
         }
       }
 
+      // Handle final puzzle (NOT combat) - show in popup like combat
+      if (res.puzzle && res.isFinalPhase) {
+        setPuzzle(res.puzzle);
+        updateGameState({ storyPhase: 'final-puzzle', isFinalPhase: true });
+        // Clear choices when puzzle appears
+        setPlayerChoices([]);
+      }
+
       // Add any items returned
       if (res.items && Array.isArray(res.items)) {
         res.items.forEach((it: any) => addItem(it));
       }
     } catch (error) {
       console.error('Error generating story:', error);
+      setAiStatus('offline');
       toast.error('Failed to get story from server. Using fallback.');
       // Fallback minimal behavior
       updateStory(`You chose to ${choice.toLowerCase()}. The path continues...`);
@@ -268,6 +387,11 @@ const MainGameUI = () => {
         {inCombat && <CombatPanel />}
       </AnimatePresence>
 
+      {/* Puzzle Panel - Shows like combat popup */}
+      <AnimatePresence>
+        {currentPuzzle && gameState.storyPhase === 'final-puzzle' && <PuzzlePanel />}
+      </AnimatePresence>
+
       {/* Modals */}
       <AdventureLogModal
         isOpen={showAdventureLog}
@@ -311,37 +435,91 @@ const MainGameUI = () => {
       <div className="relative z-10 h-screen flex flex-col overflow-hidden">
         {/* Top HUD */}
         <div className="p-4 bg-card/90 backdrop-blur-sm border-b-2 border-primary/30">
-          <div className="container mx-auto flex items-center justify-between">
-            <div className="flex items-center gap-6">
+          <div className="container mx-auto flex items-center justify-between gap-4">
+            {/* Left Section: Player Info + HP/XP Stacked */}
+            <div className="flex items-center gap-4">
               {/* Player Info */}
-              <div>
+              <div className="flex-shrink-0">
                 <h2 className="text-2xl font-fantasy text-primary">{player.name}</h2>
                 <p className="text-sm text-muted-foreground">
                   Level {player.level} {player.class}
                 </p>
               </div>
 
-              {/* Health Bar */}
-              <div className="min-w-48">
-                <div className="flex items-center gap-2 mb-1">
-                  <Heart className="w-4 h-4 text-red-500" />
-                  <span className="text-sm font-semibold">
-                    {player.health}/{player.maxHealth}
-                  </span>
+              {/* HP and XP Bars - Stacked Vertically */}
+              <div className="flex flex-col gap-2 min-w-48">
+                {/* Health Bar */}
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Heart className="w-4 h-4 text-red-500" />
+                    <span className="text-sm font-semibold">
+                      {player.health}/{player.maxHealth}
+                    </span>
+                  </div>
+                  <Progress value={healthPercentage} className="h-3 bg-muted" />
                 </div>
-                <Progress value={healthPercentage} className="h-3 bg-muted" />
+
+                {/* XP Bar */}
+                <div>
+                  <div className="flex items-center gap-2 mb-1">
+                    <Zap className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-semibold">
+                      XP: {player.xp}/{player.maxXp}
+                    </span>
+                  </div>
+                  <Progress value={xpPercentage} className="h-3 bg-muted" />
+                </div>
+              </div>
+            </div>
+
+            {/* Center Section: AI Status + Quest Progress */}
+            <div className="flex items-center gap-4 flex-1 justify-center">
+              {/* AI Status Indicator */}
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-background/50 border border-border/50">
+                {aiStatus === 'active' ? (
+                  <>
+                    <Activity className="w-4 h-4 text-green-500 animate-pulse" />
+                    <span className="text-sm font-semibold text-green-500">AI Active</span>
+                  </>
+                ) : aiStatus === 'offline' ? (
+                  <>
+                    <WifiOff className="w-4 h-4 text-red-500" />
+                    <span className="text-sm font-semibold text-red-500">AI Offline</span>
+                  </>
+                ) : (
+                  <>
+                    <Wifi className="w-4 h-4 text-muted-foreground" />
+                    <span className="text-sm font-semibold text-muted-foreground">AI Idle</span>
+                  </>
+                )}
               </div>
 
-              {/* XP Bar */}
-              <div className="min-w-48">
-                <div className="flex items-center gap-2 mb-1">
-                  <Zap className="w-4 h-4 text-primary" />
-                  <span className="text-sm font-semibold">
-                    XP: {player.xp}/{player.maxXp}
-                  </span>
+              {/* Quest Progress Bar */}
+              {activeQuests.length > 0 && (
+                <div className="min-w-64 max-w-80">
+                  <div className="flex items-center gap-2 mb-1">
+                    <Target className="w-4 h-4 text-primary" />
+                    <span className="text-sm font-semibold truncate">
+                      {activeQuests[0].title || 'Quest'}
+                    </span>
+                    {activeQuests[0].progress !== undefined && (
+                      <span className="text-xs text-muted-foreground ml-auto flex-shrink-0">
+                        {activeQuests[0].progress}%
+                      </span>
+                    )}
+                  </div>
+                  <Progress 
+                    value={activeQuests[0].progress || 0} 
+                    className="h-3 bg-muted" 
+                  />
+                  {activeQuests[0].progress === 100 && (
+                    <div className="flex items-center gap-1 mt-1 text-xs text-primary">
+                      <CheckCircle2 className="w-3 h-3" />
+                      <span>Quest Complete!</span>
+                    </div>
+                  )}
                 </div>
-                <Progress value={xpPercentage} className="h-3 bg-muted" />
-              </div>
+              )}
             </div>
 
             {/* Quick Actions */}
@@ -455,15 +633,37 @@ const MainGameUI = () => {
                 animate={{ opacity: 1 }}
                 className="prose prose-invert font-elegant text-lg leading-relaxed"
               >
-                {displayedText}
-                {isTyping && (
-                  <motion.span
-                    animate={{ opacity: [1, 0, 1] }}
-                    transition={{ duration: 0.8, repeat: Infinity }}
-                    className="text-primary"
+                {loadingStory && !displayedText ? (
+                  <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="flex items-center gap-3 text-muted-foreground py-8"
                   >
-                    |
-                  </motion.span>
+                    <Activity className="w-5 h-5 text-primary animate-pulse" />
+                    <span className="text-lg italic">
+                      AI is unfolding your story...
+                    </span>
+                    <motion.span
+                      animate={{ opacity: [0.3, 1, 0.3] }}
+                      transition={{ duration: 1.5, repeat: Infinity }}
+                      className="text-primary"
+                    >
+                      ✨
+                    </motion.span>
+                  </motion.div>
+                ) : (
+                  <>
+                    {displayedText}
+                    {isTyping && (
+                      <motion.span
+                        animate={{ opacity: [1, 0, 1] }}
+                        transition={{ duration: 0.8, repeat: Infinity }}
+                        className="text-primary"
+                      >
+                        |
+                      </motion.span>
+                    )}
+                  </>
                 )}
               </motion.div>
             </ScrollArea>

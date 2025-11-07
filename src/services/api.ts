@@ -11,6 +11,7 @@ interface StoryRequest {
     turnCount?: number;
     storyPhase?: string;
     combatEncounters?: number;
+    combatEscapes?: number;
     isAfterCombat?: boolean;
     isFinalPhase?: boolean;
   };
@@ -19,6 +20,7 @@ interface StoryRequest {
     shouldMergeStories?: boolean;
     bothSurvivedFirstFight?: boolean;
   };
+  activeQuest?: any;
 }
 
 interface StoryResponse {
@@ -32,7 +34,15 @@ interface StoryResponse {
   shouldStartCombat?: boolean;
   isFinalPhase?: boolean;
   dangerDescription?: string;
-  bossDescription?: string;
+  puzzle?: {
+    description: string;
+    question: string;
+    correctAnswer: string;
+    options?: string[]; // Array of 5 options, one is correct
+    hints?: string[];
+  };
+  questProgress?: number; // Quest completion percentage (0-100)
+  isFallback?: boolean;
 }
 
 interface InitializeResponse {
@@ -41,6 +51,7 @@ interface InitializeResponse {
   items: Item[];
   choices?: string[];
   greeting?: string;
+  isFallback?: boolean;
 }
 
 interface CombatRequest {
@@ -101,7 +112,8 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       });
-      return await response.json();
+      const data = await response.json();
+      return { ...data, isFallback: false };
     } catch (error) {
       console.error('Game initialization failed:', error);
       // Fallback
@@ -120,7 +132,8 @@ export const api = {
           { id: 'item_sword_1', name: 'Rusty Sword', type: 'weapon', effect: '+2 Attack', quantity: 1 },
           { id: 'item_potion_1', name: 'Health Potion', type: 'potion', effect: 'Restores 30 HP', quantity: 2 }
         ],
-        choices: ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
+        choices: ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"],
+        isFallback: true
       };
     }
   },
@@ -133,7 +146,8 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
       });
-      return await response.json();
+      const data = await response.json();
+      return { ...data, isFallback: false };
     } catch (error) {
       console.error('Story generation failed:', error);
       // Return dynamic mock data for offline mode based on the request to make local testing richer
@@ -150,6 +164,7 @@ export const api = {
             choices: ['Attack the creature', 'Try to talk to it', 'Attempt to flee'],
             enemy: { id: 'goblin_1', name: 'Goblin Scout', health: 28, maxHealth: 28, attack: 7, defense: 3, position: { x: 0, y: 0 } },
           items: [],
+          isFallback: true,
         };
       }
 
@@ -158,6 +173,7 @@ export const api = {
           story: `You chose to ${choiceText.toLowerCase() || 'investigate the center'}. The air smells of old incense. A small chest sits half-buried beneath rubble; inside you find a glittering potion and a weathered note.`,
           choices: ['Drink the potion', 'Read the note', 'Leave it be'],
           items: [{ id: 'potion_minor', name: 'Minor Health Potion', type: 'potion', effect: 'Restores 30 HP', quantity: 1 }],
+          isFallback: true,
         };
       }
 
@@ -165,6 +181,7 @@ export const api = {
       return {
         story: `You chose to ${choiceText.toLowerCase() || 'take the right path'}. The corridor opens into a quiet chamber with murals telling an ancient tale. You feel the weight of destiny — could this be a turning point?`,
         choices: ['Study the murals', 'Set up camp and rest', 'Search for secret doors'],
+        isFallback: true,
       };
     }
   },

@@ -227,6 +227,7 @@ class StoryRequest(BaseModel):
     choice: Optional[str] = None
     gameState: Optional[Dict[str, Any]] = None  # Track turn count, phase, etc.
     multiplayer: Optional[Dict[str, Any]] = None  # For multiplayer: other player info, merge flag, etc.
+    activeQuest: Optional[Dict[str, Any]] = None  # Active quest for story context
 
 class CombatRequest(BaseModel):
     player: Player
@@ -336,9 +337,24 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
 
         result = parse_json_response(ai_response_text)
         
-        # Ensure choices are present
+        # Ensure choices are present and are strings (not objects)
         if "choices" not in result or not result.get("choices"):
             result["choices"] = ["Explore the area", "Investigate further", "Proceed with caution"]
+        else:
+            # Filter choices to ensure they are all strings
+            choices = result.get("choices", [])
+            if isinstance(choices, list):
+                result["choices"] = [
+                    str(choice).strip() 
+                    for choice in choices 
+                    if isinstance(choice, (str, int, float)) and str(choice).strip()
+                ]
+                if len(result["choices"]) == 0:
+                    result["choices"] = ["Explore the area", "Investigate further", "Proceed with caution"]
+        
+        # Ensure story is a string
+        if "story" in result and not isinstance(result.get("story"), str):
+            result["story"] = str(result.get("story", ""))
         
         # Combine greeting and story if greeting exists
         if "greeting" in result and result.get("greeting"):
@@ -368,7 +384,7 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
             "choices": ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
         }
 
-async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None, active_quest: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Generate dynamic story based on player choices using Gemini AI."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
@@ -377,6 +393,7 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     turn_count = game_state.get("turnCount", 0) if game_state else 0
     story_phase = game_state.get("storyPhase", "exploration") if game_state else "exploration"  # exploration, danger, combat, final
     combat_encounters = game_state.get("combatEncounters", 0) if game_state else 0
+    combat_escapes = game_state.get("combatEscapes", 0) if game_state else 0  # Track combat escapes
     is_after_combat = game_state.get("isAfterCombat", False) if game_state else False
     is_final_phase = game_state.get("isFinalPhase", False) if game_state else False
 
@@ -400,22 +417,108 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     elif turn_count == 0:
         # Initial story turn
         phase_instruction = "This is the first story turn. Generate a SHORT opening scene (MAX 2-3 sentences, use simple English words)."
-    elif turn_count < 3 and story_phase == "exploration":
-        # Story phase (2-3 turns)
-        phase_instruction = f"This is story turn {turn_count + 1} of the exploration phase. Continue building the narrative SHORTLY (MAX 2-3 sentences, simple English). After this turn, danger should appear."
-    elif turn_count >= 3 and story_phase == "exploration":
-        # Time for danger encounter
-        phase_instruction = "A dangerous situation or monster should appear now. Describe the threat SHORTLY (MAX 2-3 sentences, simple English) but DO NOT automatically start combat. Give the player SHORT options like 'Attack', 'Run', 'Hide'."
+    elif turn_count < 5 and story_phase == "exploration" and combat_escapes < 2:
+        # Story phase - longer exploration before first combat (5 turns instead of 3)
+        # Only show danger if player hasn't escaped twice already
+        phase_instruction = f"This is story turn {turn_count + 1} of the exploration phase. Continue building the narrative SHORTLY (MAX 2-3 sentences, simple English). Focus on quest progression. Combat encounters should be RARE - only introduce danger if it's truly necessary for the quest."
+    elif turn_count >= 5 and story_phase == "exploration" and combat_escapes < 2 and combat_encounters == 0:
+        # Time for FIRST danger encounter (only if player hasn't escaped twice)
+        phase_instruction = "A dangerous situation or monster may appear now, but keep it RARE. Describe the threat SHORTLY (MAX 2-3 sentences, simple English) but DO NOT automatically start combat. Give the player SHORT options like 'Attack', 'Run', 'Hide'. Remember: combat should be MINIMAL in this adventure."
         story_phase = "danger"
-    elif story_phase == "danger" and choice and "attack" in choice.lower():
-        # Player chose to attack - combat will start
-        phase_instruction = "The player has chosen to attack. Describe the beginning of combat SHORTLY (MAX 2 sentences, simple English) but do NOT include an enemy object yet (combat will be handled separately)."
+    elif combat_escapes >= 2:
+        # Player escaped twice - no more combat, just story until final puzzle
+        if not is_final_phase:
+            phase_instruction = f"""
+The player has avoided combat multiple times. Continue the story focusing on quest completion.
+CRITICAL:
+1. NO MORE COMBAT OR DANGER - the player prefers to avoid fights.
+2. Continue the narrative toward quest completion.
+3. Build toward the FINAL PUZZLE which is COMPULSORY.
+4. The final puzzle will appear soon - prepare the story for it.
+5. Keep story SHORT (MAX 2-3 sentences, simple English).
+6. Focus on exploration and quest objectives.
+"""
+        else:
+            # Final puzzle phase
+            phase_instruction = """
+This is the FINAL CHALLENGE - a COMPULSORY tricky puzzle!
+CRITICAL REQUIREMENTS:
+1. Create a VERY TRICKY puzzle or riddle related to the story/quest that the player has experienced.
+2. The puzzle question should be SHORT (1-2 sentences, simple English) but challenging.
+3. You MUST provide EXACTLY 5 options/choices for the answer.
+4. ONE of the 5 options must be the CORRECT answer.
+5. The other 4 options should be plausible but WRONG answers (tricky distractors).
+6. The puzzle should test the player's memory/understanding of the story events.
+7. Make it challenging but fair - related to what happened in the adventure.
+This puzzle appears in a popup like combat with 5 clickable buttons.
+"""
+            story_phase = "final"
+    elif story_phase == "danger" and choice:
+        choice_lower = choice.lower()
+        if "attack" in choice_lower:
+            # Player chose to attack - combat will start
+            phase_instruction = "The player has chosen to attack. Describe the beginning of combat SHORTLY (MAX 2 sentences, simple English) but do NOT include an enemy object yet (combat will be handled separately)."
+        elif "hide" in choice_lower or "run" in choice_lower or "flee" in choice_lower or "escape" in choice_lower:
+            # Player chose to hide/run - track escape and continue story
+            escape_count = combat_escapes + 1
+            quest_context = ""
+            if active_quest:
+                quest_title = active_quest.get("title", "")
+                quest_desc = active_quest.get("description", "")
+                quest_context = f"\n\nCRITICAL: The player has an active quest: '{quest_title}' - {quest_desc}. Continue the story based on this quest. The player avoided the threat - describe how they escape/hide and then continue with quest progression."
+            
+            if escape_count == 1:
+                # First escape - AI can try one more combat opportunity later
+                phase_instruction = f"""
+The player chose to {'hide' if 'hide' in choice_lower else 'run/escape'} from the danger (escape #{escape_count}). 
+CRITICAL INSTRUCTIONS:
+1. Describe SHORTLY (MAX 2-3 sentences, simple English) how the player successfully avoids the threat.
+2. The threat is now BEHIND them - do NOT mention it again immediately.
+3. You MAY introduce ONE more combat opportunity later if it fits the quest, but keep it RARE.
+4. Continue the main story narrative focusing on quest progression.
+5. Move the adventure forward toward quest completion.
+6. Focus on exploration, discovery, or quest objectives.
+{quest_context}
+After this, the story phase should return to exploration and continue normally.
+"""
+            else:
+                # Second escape - NO MORE COMBAT, just story until final puzzle
+                phase_instruction = f"""
+The player chose to {'hide' if 'hide' in choice_lower else 'run/escape'} from the danger (escape #{escape_count} - FINAL ESCAPE). 
+CRITICAL INSTRUCTIONS:
+1. Describe SHORTLY (MAX 2-3 sentences, simple English) how the player successfully avoids the threat.
+2. The threat is now BEHIND them - do NOT mention it again or create new threats.
+3. STRICTLY FORBIDDEN: NO MORE COMBAT OR DANGER - player has escaped twice.
+4. You MUST continue the main story narrative focusing on quest progression.
+5. Move the adventure forward toward quest completion and the FINAL PUZZLE.
+6. Focus on exploration, discovery, or quest objectives - NO MORE COMBAT OR THREATS.
+7. The choices should be about exploration, investigation, or quest-related actions - NOT combat options.
+8. Build toward the COMPULSORY final puzzle which will appear soon.
+{quest_context}
+After this, the story phase should return to exploration and continue toward the final puzzle.
+"""
+            story_phase = "exploration"  # Return to exploration phase after avoiding danger
     elif is_after_combat:
-        # Continue story after combat
-        phase_instruction = "The combat has ended. Continue the story narrative SHORTLY (MAX 2-3 sentences, simple English), describing what happens next."
+        # Continue story after combat - STRICTLY NO MORE COMBAT, focus on quest
+        quest_context = ""
+        if active_quest:
+            quest_title = active_quest.get("title", "")
+            quest_desc = active_quest.get("description", "")
+            quest_context = f"\n\nCRITICAL: The player has an active quest: '{quest_title}' - {quest_desc}. You MUST continue the story based on this quest and help the player progress toward completing it. DO NOT create new enemies, combat, or threats. The previous enemy is DEAD and GONE forever."
+        phase_instruction = f"""
+CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
+1. The combat has ENDED. The enemy is DEFEATED and DEAD.
+2. STRICTLY FORBIDDEN: Do NOT create new enemies, combat encounters, attacks, strikes, or any threats.
+3. STRICTLY FORBIDDEN: Do NOT mention the dead creature again - it is completely gone.
+4. You MUST continue the main story narrative focusing on quest progression.
+5. Generate a SHORT story (MAX 2-3 sentences, simple English) that moves the adventure forward.
+6. Focus on exploration, discovery, or quest objectives - NO COMBAT.
+7. The choices should be about exploration, investigation, or quest-related actions - NOT combat options.
+{quest_context}
+"""
     elif is_final_phase:
-        # Final boss phase
-        phase_instruction = "This is the FINAL BATTLE phase. A powerful boss or final enemy should appear. Describe the epic confrontation SHORTLY (MAX 2-3 sentences, simple English). The player must fight - this is the climactic battle!"
+        # Final puzzle phase (NOT combat - it's a puzzle!)
+        phase_instruction = "This is the FINAL CHALLENGE - a tricky puzzle! Create an interesting puzzle or riddle (SHORT, 2-3 sentences, simple English). The player must solve it to win. If they fail, game over. Give them puzzle choices/options to solve it."
         story_phase = "final"
     else:
         phase_instruction = "Continue the story narrative SHORTLY (MAX 2-3 sentences, simple English)."
@@ -443,8 +546,12 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     - Turn Count: {turn_count}
     - Story Phase: {story_phase}
     - Combat Encounters Survived: {combat_encounters}
+    - Combat Escapes: {combat_escapes} (if >= 2, NO MORE COMBAT - only story until final puzzle)
     - Is Final Phase: {is_final_phase}
     {multiplayer_context}
+    
+    Active Quest:
+    {f"Title: {active_quest.get('title', 'None')}\nDescription: {active_quest.get('description', 'None')}\nObjectives: {active_quest.get('objectives', [])}" if active_quest else "No active quest"}
 
     Previous Story Context (most recent first):
     {context}
@@ -458,8 +565,15 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     2.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away").
     3.  If in the "danger" phase and player hasn't chosen attack yet, include choices like "Attack", "Run", "Hide" (keep them short).
     4.  DO NOT include an enemy object unless the player explicitly chooses to attack AND combat hasn't started yet.
+    5.  If player chose to hide/run/escape from danger, continue the story focusing on quest progression - NO MORE COMBAT OR THREATS.
     5.  Only include items if the player finds them in this specific moment.
-    6.  If this is after combat, continue the story naturally but keep it SHORT (2-3 sentences max).
+    6.  CRITICAL: If this is after combat (isAfterCombat is true), you MUST:
+       - Continue the story focusing on quest progression
+       - STRICTLY FORBIDDEN: Do NOT create new enemies, combat, attacks, or threats
+       - STRICTLY FORBIDDEN: Do NOT mention the dead creature
+       - Focus on exploration, discovery, or quest objectives
+       - Choices should be about exploration/investigation - NOT combat
+       - Keep it SHORT (2-3 sentences max)
 
     Format your response STRICTLY as JSON:
     {{
@@ -468,16 +582,20 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
       "dangerEncounter": {{
         "description": "Description of the threat",
         "enemy": {{ "id": "enemy_goblin_1", "name": "Goblin Scout", "health": 30, "maxHealth": 30, "attack": 8, "defense": 4 }}
-      }} // Optional: Include ONLY if in danger phase and player chooses to attack
-      "finalBoss": {{
-        "description": "Description of the final boss",
-        "enemy": {{ "id": "boss_final_1", "name": "Final Boss", "health": 150, "maxHealth": 150, "attack": 20, "defense": 10 }}
-      }} // Optional: Include ONLY if in final phase
+      }} // Optional: Include ONLY if in danger phase and player chooses to attack. STRICTLY FORBIDDEN if isAfterCombat is true - NO MORE COMBAT AFTER COMBAT ENDS!
+      "finalPuzzle": {{
+        "description": "Description of the tricky puzzle or riddle (SHORT, 1-2 sentences)",
+        "question": "The VERY TRICKY puzzle question related to the story (SHORT, 1-2 sentences, simple English)",
+        "correctAnswer": "The EXACT text of the correct option (must match one of the 5 options exactly)",
+        "options": ["Option 1", "Option 2", "Option 3", "Option 4", "Option 5"], // EXACTLY 5 options - ONE must be correct
+        "hints": ["Hint 1", "Hint 2"] // Optional
+      }} // Optional: Include ONLY if in final phase (NOT an enemy - it's a puzzle!). MUST have exactly 5 options with one correct answer.
       "items": [{{ "id": "item_health_potion_1", "name": "Minor Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 1 }}] // Optional
       "events": [ {{ "type": "story", "text": "Event text" }} ] // Optional
-      "storyPhase": "{story_phase}" // Current phase
-      "shouldStartCombat": false // Set to true ONLY if player chose attack in danger phase OR if in final phase
-      "isFinalPhase": {str(is_final_phase).lower()} // True if this is the final battle
+      "storyPhase": "{story_phase}" // Current phase (should be "exploration" if player hid/ran from danger)
+      "shouldStartCombat": false // Set to true ONLY if player chose attack in danger phase. MUST be false if player hid/ran/escaped (NOT for final phase - it's a puzzle!)
+      "isFinalPhase": {str(is_final_phase).lower()} // True if this is the final puzzle challenge (COMPULSORY - must appear)
+      "questProgress": 50 // Quest completion percentage (0-100). Update based on actual quest progress. When 80-90%, prepare for final puzzle.
     }}
 
     Important Notes:
@@ -518,7 +636,24 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
         if not ai_response_text:
              raise HTTPException(status_code=500, detail="AI response was empty or blocked.")
 
-        return parse_json_response(ai_response_text)
+        result = parse_json_response(ai_response_text)
+        
+        # Validate and clean choices - ensure they are strings, not objects
+        if "choices" in result and isinstance(result.get("choices"), list):
+            choices = result.get("choices", [])
+            result["choices"] = [
+                str(choice).strip() 
+                for choice in choices 
+                if isinstance(choice, (str, int, float)) and str(choice).strip()
+            ]
+            if len(result["choices"]) == 0:
+                result["choices"] = ["Continue forward", "Look around", "Proceed carefully"]
+        
+        # Ensure story is a string
+        if "story" in result and not isinstance(result.get("story"), str):
+            result["story"] = str(result.get("story", ""))
+        
+        return result
     except Exception as e:
         logger.error(f"Error during Gemini API call or response processing: {e}")
         # Provide a fallback generic response to keep the game going
@@ -725,19 +860,82 @@ async def api_generate_story(request: StoryRequest):
             request.previousEvents,
             request.choice,
             request.gameState,
-            request.multiplayer
+            request.multiplayer,
+            request.activeQuest
         )
         
-        # Handle danger encounter - extract enemy if player chose to attack
-        if result.get("dangerEncounter") and result.get("shouldStartCombat"):
+        # CRITICAL: If this is after combat, STRICTLY prevent any new combat encounters
+        is_after_combat = request.gameState.get("isAfterCombat", False) if request.gameState else False
+        
+        # Check if player chose to hide/run - if so, don't start combat
+        choice_lower = (request.choice or "").lower()
+        player_hid_or_ran = any(word in choice_lower for word in ["hide", "run", "flee", "escape"]) if request.choice else False
+        
+        if is_after_combat:
+            # Remove any combat-related content - story must continue without combat
+            if "dangerEncounter" in result:
+                logger.warning("AI tried to create combat after combat ended - removing it")
+                del result["dangerEncounter"]
+            if "enemy" in result:
+                logger.warning("AI tried to create enemy after combat ended - removing it")
+                del result["enemy"]
+            result["shouldStartCombat"] = False  # Force no combat
+        elif player_hid_or_ran:
+            # Player chose to hide/run - ensure no combat starts, continue quest
+            if "dangerEncounter" in result:
+                logger.info("Player chose to hide/run - removing danger encounter")
+                del result["dangerEncounter"]
+            if "enemy" in result:
+                del result["enemy"]
+            result["shouldStartCombat"] = False
+            # Ensure story phase is exploration after hiding/running
+            result["storyPhase"] = "exploration"
+        
+        # Handle danger encounter - extract enemy if player chose to attack (ONLY if not after combat and not hiding/running)
+        if not is_after_combat and not player_hid_or_ran and result.get("dangerEncounter") and result.get("shouldStartCombat"):
             result["enemy"] = result["dangerEncounter"].get("enemy")
             result["dangerDescription"] = result["dangerEncounter"].get("description", "")
         
-        # Handle final boss encounter
-        if result.get("finalBoss") and result.get("isFinalPhase"):
-            result["enemy"] = result["finalBoss"].get("enemy")
-            result["shouldStartCombat"] = True
-            result["bossDescription"] = result["finalBoss"].get("description", "")
+        # Final validation: Ensure choices don't contain objects (like items)
+        if "choices" in result and isinstance(result.get("choices"), list):
+            cleaned_choices = []
+            for choice in result.get("choices", []):
+                # Skip if it's a dict/object (like an item)
+                if isinstance(choice, dict):
+                    logger.warning(f"Found object in choices array, skipping: {choice}")
+                    continue
+                # Only keep strings, numbers that can be converted to strings
+                if isinstance(choice, (str, int, float)):
+                    cleaned_choices.append(str(choice).strip())
+            result["choices"] = cleaned_choices if cleaned_choices else ["Continue", "Explore", "Investigate"]
+        
+        # Handle final puzzle (NOT combat - it's a puzzle challenge!)
+        if result.get("finalPuzzle") and result.get("isFinalPhase"):
+            puzzle_data = result["finalPuzzle"]
+            result["puzzle"] = puzzle_data
+            result["shouldStartCombat"] = False  # No combat for final phase - it's a puzzle!
+            
+            # Log puzzle info to terminal for testing
+            logger.info("=" * 60)
+            logger.info("🧩 FINAL PUZZLE GENERATED:")
+            logger.info(f"Question: {puzzle_data.get('question', 'N/A')}")
+            logger.info(f"Correct Answer: {puzzle_data.get('correctAnswer', 'N/A')}")
+            if puzzle_data.get('options'):
+                logger.info(f"Options ({len(puzzle_data.get('options', []))}):")
+                for i, opt in enumerate(puzzle_data.get('options', []), 1):
+                    is_correct = opt.strip().lower() == puzzle_data.get('correctAnswer', '').strip().lower()
+                    marker = "✓ CORRECT" if is_correct else ""
+                    logger.info(f"  {i}. {opt} {marker}")
+            logger.info("=" * 60)
+        
+        # Check if quest progress indicates final puzzle should appear
+        quest_progress = result.get("questProgress", 0)
+        if quest_progress >= 85 and not result.get("puzzle") and not is_after_combat and not player_hid_or_ran:
+            # Quest is nearly complete - trigger final puzzle phase
+            logger.info(f"Quest progress {quest_progress}% - preparing for final puzzle")
+            # Don't force it here, let AI generate it naturally, but ensure isFinalPhase is set
+            if not result.get("isFinalPhase"):
+                result["isFinalPhase"] = True
         
         return result
     except Exception as e:
