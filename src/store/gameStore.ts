@@ -64,6 +64,8 @@ interface GameState {
   // Quests
   activeQuests: any[];
   completedQuests: any[];
+  addQuest: (quest: any) => void;
+  completeQuest: (questId: string) => void;
   
   // World
   currentLocation: string;
@@ -227,6 +229,21 @@ export const useGameStore = create<GameState>((set) => ({
     }),
   
   updateSettings: (settings) => set(settings),
+  
+  addQuest: (quest) =>
+    set((state) => ({
+      activeQuests: [...state.activeQuests, quest],
+    })),
+  
+  completeQuest: (questId) =>
+    set((state) => {
+      const quest = state.activeQuests.find((q) => q.id === questId);
+      if (!quest) return state;
+      return {
+        activeQuests: state.activeQuests.filter((q) => q.id !== questId),
+        completedQuests: [...state.completedQuests, { ...quest, completed: true }],
+      };
+    }),
   
   resetGame: () => set(initialState),
 }));

@@ -13,6 +13,7 @@
 import google.generativeai as genai
 import os
 import json
+import datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -130,11 +131,22 @@ class StoryEvent(BaseModel):
     timestamp: str # Assuming ISO format string from frontend/JS Date
     type: str
 
+class Quest(BaseModel):
+    id: str
+    title: str
+    description: str
+    type: str = "main"  # "main" or "side"
+    objectives: Optional[List[Dict[str, Any]]] = None
+    progress: Optional[int] = None
+    rewards: Optional[Dict[str, Any]] = None
+
 class StoryRequest(BaseModel):
     player: Player
     genre: str
     previousEvents: List[StoryEvent]
     choice: Optional[str] = None
+    gameState: Optional[Dict[str, Any]] = None  # Track turn count, phase, etc.
+    multiplayer: Optional[Dict[str, Any]] = None  # For multiplayer: other player info, merge flag, etc.
 
 class CombatRequest(BaseModel):
     player: Player
@@ -163,14 +175,140 @@ def parse_json_response(text: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Internal server error during response parsing.")
 
 # --- AI Interaction Functions (Async) ---
-async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str]) -> Dict[str, Any]:
+async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[str, Any]:
+    """Generate initial loot and quest at game start."""
+    if not model:
+        raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
+
+    prompt = f"""
+    You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
+
+    Player Character:
+    - Name: {player.name}
+    - Class: {player.class_name}
+    - Level: {player.level}
+    - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
+
+    This is the very beginning of the adventure. Generate:
+    1. A starting quest that fits the {genre} theme. The quest should be engaging and give the player a clear goal.
+    2. Initial loot/items appropriate for a level {player.level} {player.class_name} starting their adventure.
+
+    Format your response STRICTLY as JSON:
+    {{
+      "quest": {{
+        "id": "quest_start_1",
+        "title": "Quest Title",
+        "description": "Detailed quest description and objectives",
+        "type": "main",
+        "objectives": [{{"text": "Objective 1", "completed": false}}],
+        "rewards": {{"xp": 100, "gold": 50, "items": []}}
+      }},
+      "items": [
+        {{"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1}},
+        {{"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}}
+      ],
+      "story": "Opening narrative that introduces the quest and gives the player their starting items."
+    }}
+
+    Important Notes:
+    -   Make the quest exciting and relevant to the {genre} theme.
+    -   Starting items should be appropriate for a beginner {player.class_name}.
+    -   Ensure the JSON format is perfect, with keys and values in double quotes.
+    -   Do NOT include explanations outside the JSON structure.
+    """
+
+    try:
+        response = await model.generate_content_async(prompt)
+        if not response.candidates:
+            raise HTTPException(status_code=500, detail="AI failed to generate initial content.")
+        
+        if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
+            ai_response_text = response.candidates[0].content.parts[0].text
+        else:
+            ai_response_text = getattr(response, 'text', '')
+
+        if not ai_response_text:
+            raise HTTPException(status_code=500, detail="AI response was empty or blocked.")
+
+        return parse_json_response(ai_response_text)
+    except Exception as e:
+        logger.error(f"Error generating initial loot/quest: {e}")
+        # Fallback
+        return {
+            "quest": {
+                "id": "quest_start_1",
+                "title": "The Beginning",
+                "description": "Embark on your adventure and discover what lies ahead.",
+                "type": "main",
+                "objectives": [{"text": "Explore the world", "completed": False}],
+                "rewards": {"xp": 100, "gold": 50, "items": []}
+            },
+            "items": [
+                {"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1},
+                {"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}
+            ],
+            "story": "You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls."
+        }
+
+async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Generate dynamic story based on player choices using Gemini AI."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
 
-    # Build context from previous events (take the last 3 for brevity)
-    context = "\n".join([e.text for e in previous_events[-3:]]) if previous_events else "The adventure begins."
+    # Extract game state info
+    turn_count = game_state.get("turnCount", 0) if game_state else 0
+    story_phase = game_state.get("storyPhase", "exploration") if game_state else "exploration"  # exploration, danger, combat, final
+    combat_encounters = game_state.get("combatEncounters", 0) if game_state else 0
+    is_after_combat = game_state.get("isAfterCombat", False) if game_state else False
+    is_final_phase = game_state.get("isFinalPhase", False) if game_state else False
+
+    # Multiplayer info
+    is_multiplayer = multiplayer is not None
+    other_player = multiplayer.get("otherPlayer") if multiplayer else None
+    should_merge_stories = multiplayer.get("shouldMergeStories", False) if multiplayer else False
+    both_survived_first_fight = multiplayer.get("bothSurvivedFirstFight", False) if multiplayer else False
+
+    # Build context from previous events (take the last 5 for better context)
+    context = "\n".join([e.text for e in previous_events[-5:]]) if previous_events else "The adventure begins."
     player_choice_text = f"Player's Choice: {choice}" if choice else "This is the start of a new scene or the continuation after a combat."
+
+    # Multiplayer merge logic
+    if is_multiplayer and should_merge_stories and both_survived_first_fight:
+        other_player_info = f"Other Player: {other_player.get('name', 'Unknown')} ({other_player.get('class', 'Unknown')})" if other_player else ""
+        phase_instruction = f"This is a CRITICAL MOMENT: The two players ({player.name}, {player.class_name} and {other_player_info}) are meeting for the first time after surviving their separate adventures. Create a dramatic narrative scene where they encounter each other, explicitly mentioning both their names and classes. From this point forward, they will share the same story and choices."
+    elif is_multiplayer and not should_merge_stories:
+        # Separate stories for each player
+        phase_instruction = "You are running a SEPARATE, INDEPENDENT story for this player. Do not reference the other player. This player's story is unique to them."
+    elif turn_count == 0:
+        # Initial story turn
+        phase_instruction = "This is the first story turn. Generate an engaging opening scene with 2-3 paragraphs."
+    elif turn_count < 3 and story_phase == "exploration":
+        # Story phase (2-3 turns)
+        phase_instruction = f"This is story turn {turn_count + 1} of the exploration phase. Continue building the narrative. After this turn, danger should appear."
+    elif turn_count >= 3 and story_phase == "exploration":
+        # Time for danger encounter
+        phase_instruction = "A dangerous situation or monster should appear now. Describe the threat but DO NOT automatically start combat. Give the player options to Attack, Run, Hide, or other creative choices."
+        story_phase = "danger"
+    elif story_phase == "danger" and choice and "attack" in choice.lower():
+        # Player chose to attack - combat will start
+        phase_instruction = "The player has chosen to attack. Describe the beginning of combat but do NOT include an enemy object yet (combat will be handled separately)."
+    elif is_after_combat:
+        # Continue story after combat
+        phase_instruction = "The combat has ended. Continue the story narrative, describing what happens next."
+    elif is_final_phase:
+        # Final boss phase
+        phase_instruction = "This is the FINAL BATTLE phase. A powerful boss or final enemy should appear. Describe the epic confrontation. The player must fight - this is the climactic battle!"
+        story_phase = "final"
+    else:
+        phase_instruction = "Continue the story narrative."
+
+    # Build multiplayer context
+    multiplayer_context = ""
+    if is_multiplayer:
+        if should_merge_stories and both_survived_first_fight:
+            multiplayer_context = f"\n\nMULTIPLAYER MODE - STORY MERGE:\nYou are now managing a PARTY of two players:\n1. {player.name} ({player.class_name}) - Level {player.level}\n2. {other_player.get('name', 'Unknown')} ({other_player.get('class', 'Unknown')}) - Level {other_player.get('level', 1)}\n\nFrom now on, generate ONE unified story for BOTH players. They share the same choices and outcomes."
+        else:
+            multiplayer_context = f"\n\nMULTIPLAYER MODE - SEPARATE STORY:\nYou are running an INDEPENDENT story for {player.name} only. Do not reference any other players."
 
     prompt = f"""
     You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
@@ -183,25 +321,45 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
     - Inventory: {', '.join([f'{item.name} (x{item.quantity})' for item in player.inventory]) if player.inventory else 'Empty'}
 
+    Game State:
+    - Turn Count: {turn_count}
+    - Story Phase: {story_phase}
+    - Combat Encounters Survived: {combat_encounters}
+    - Is Final Phase: {is_final_phase}
+    {multiplayer_context}
+
     Previous Story Context (most recent first):
     {context}
 
     {player_choice_text}
 
+    {phase_instruction}
+
     Generate the next part of the story:
-    1.  Write an engaging 1-3 paragraph continuation of the story, describing the scene, events, or consequences of the player's choice (or the current situation if no choice was made).
-    2.  Provide exactly 3 distinct and meaningful choices for the player relevant to the current situation. Choices should be concise actions or dialogue options.
-    3.  Optionally, introduce a combat encounter if dramatically appropriate. If so, define the enemy clearly. Only include an enemy if combat should start *now*.
-    4.  Optionally, mention items found if logical within the narrative. Only include items if the player finds them *now*.
-    5.  Optionally, include non-combat events like skill checks (e.g., "Roll Agility to dodge") or NPC interactions.
+    1.  Write an engaging narrative continuation (1-3 paragraphs) based on the phase instruction above.
+    2.  Provide exactly 3 distinct and meaningful choices for the player.
+    3.  If in the "danger" phase and player hasn't chosen attack yet, include choices like "Attack", "Run", "Hide", or other creative options.
+    4.  DO NOT include an enemy object unless the player explicitly chooses to attack AND combat hasn't started yet.
+    5.  Only include items if the player finds them in this specific moment.
+    6.  If this is after combat, continue the story naturally.
 
     Format your response STRICTLY as JSON:
     {{
       "story": "Your narrative here...",
       "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"],
-      "enemy": {{ "id": "enemy_goblin_1", "name": "Goblin Scout", "health": 30, "maxHealth": 30, "attack": 8, "defense": 4 }} // Optional: Include ONLY if combat starts NOW
-      "items": [{{ "id": "item_health_potion_1", "name": "Minor Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 1 }}] // Optional: Include ONLY if items are found NOW
-      "events": [ {{ "type": "level-up", "text": "You feel stronger!" }} ] // Optional: Include special game events like level-ups, quest updates etc.
+      "dangerEncounter": {{
+        "description": "Description of the threat",
+        "enemy": {{ "id": "enemy_goblin_1", "name": "Goblin Scout", "health": 30, "maxHealth": 30, "attack": 8, "defense": 4 }}
+      }} // Optional: Include ONLY if in danger phase and player chooses to attack
+      "finalBoss": {{
+        "description": "Description of the final boss",
+        "enemy": {{ "id": "boss_final_1", "name": "Final Boss", "health": 150, "maxHealth": 150, "attack": 20, "defense": 10 }}
+      }} // Optional: Include ONLY if in final phase
+      "items": [{{ "id": "item_health_potion_1", "name": "Minor Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 1 }}] // Optional
+      "events": [ {{ "type": "story", "text": "Event text" }} ] // Optional
+      "storyPhase": "{story_phase}" // Current phase
+      "shouldStartCombat": false // Set to true ONLY if player chose attack in danger phase OR if in final phase
+      "isFinalPhase": {str(is_final_phase).lower()} // True if this is the final battle
     }}
 
     Important Notes:
@@ -209,6 +367,7 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     -   Keep the difficulty appropriate for a level {player.level} {player.class_name}.
     -   Ensure the JSON format is perfect, with keys and values in double quotes.
     -   Do NOT include explanations outside the JSON structure.
+    -   Combat should only start when player explicitly chooses to attack in danger phase.
     """
 
     try:
@@ -344,6 +503,19 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
         }
 
 # --- API Endpoints ---
+@app.post("/api/initialize")
+async def api_initialize_game(request: StoryRequest):
+    """Endpoint to initialize the game with initial loot and quest."""
+    try:
+        result = await generate_initial_loot_and_quest(
+            request.player,
+            request.genre
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Error in /api/initialize endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 @app.post("/api/story")
 async def api_generate_story(request: StoryRequest):
     """Endpoint to generate the next part of the story."""
@@ -353,8 +525,22 @@ async def api_generate_story(request: StoryRequest):
             request.player,
             request.genre,
             request.previousEvents,
-            request.choice
+            request.choice,
+            request.gameState,
+            request.multiplayer
         )
+        
+        # Handle danger encounter - extract enemy if player chose to attack
+        if result.get("dangerEncounter") and result.get("shouldStartCombat"):
+            result["enemy"] = result["dangerEncounter"].get("enemy")
+            result["dangerDescription"] = result["dangerEncounter"].get("description", "")
+        
+        # Handle final boss encounter
+        if result.get("finalBoss") and result.get("isFinalPhase"):
+            result["enemy"] = result["finalBoss"].get("enemy")
+            result["shouldStartCombat"] = True
+            result["bossDescription"] = result["finalBoss"].get("description", "")
+        
         return result
     except Exception as e:
         logger.error(f"Error in /api/story endpoint: {e}")
@@ -479,7 +665,6 @@ async def read_root():
 # If you run `uvicorn backend.app:app --reload --port 8000`, this block is not needed.
 if __name__ == "__main__":
     import uvicorn
-    import datetime # Need this import here for save endpoint timestamp
 
     logger.info("Starting Uvicorn server directly...")
     # Add reload=True for development convenience if desired

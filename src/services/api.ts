@@ -7,6 +7,18 @@ interface StoryRequest {
   genre: string;
   previousEvents: StoryEvent[];
   choice?: string;
+  gameState?: {
+    turnCount?: number;
+    storyPhase?: string;
+    combatEncounters?: number;
+    isAfterCombat?: boolean;
+    isFinalPhase?: boolean;
+  };
+  multiplayer?: {
+    otherPlayer?: any;
+    shouldMergeStories?: boolean;
+    bothSurvivedFirstFight?: boolean;
+  };
 }
 
 interface StoryResponse {
@@ -15,6 +27,18 @@ interface StoryResponse {
   events?: Partial<StoryEvent>[];
   enemy?: Enemy;
   items?: Item[];
+  quest?: any;
+  storyPhase?: string;
+  shouldStartCombat?: boolean;
+  isFinalPhase?: boolean;
+  dangerDescription?: string;
+  bossDescription?: string;
+}
+
+interface InitializeResponse {
+  story: string;
+  quest: any;
+  items: Item[];
 }
 
 interface CombatRequest {
@@ -67,6 +91,36 @@ const fetchWithRetry = async (
 };
 
 export const api = {
+  // Initialize Game (get initial loot and quest)
+  async initializeGame(request: StoryRequest): Promise<InitializeResponse> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/initialize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Game initialization failed:', error);
+      // Fallback
+      return {
+        story: "You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls.",
+        quest: {
+          id: "quest_start_1",
+          title: "The Beginning",
+          description: "Embark on your adventure and discover what lies ahead.",
+          type: "main",
+          objectives: [{ text: "Explore the world", completed: false }],
+          rewards: { xp: 100, gold: 50, items: [] }
+        },
+        items: [
+          { id: 'item_sword_1', name: 'Rusty Sword', type: 'weapon', effect: '+2 Attack', quantity: 1 },
+          { id: 'item_potion_1', name: 'Health Potion', type: 'potion', effect: 'Restores 30 HP', quantity: 2 }
+        ]
+      };
+    }
+  },
+
   // Story Generation
   async generateStory(request: StoryRequest): Promise<StoryResponse> {
     try {
