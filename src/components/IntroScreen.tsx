@@ -220,12 +220,12 @@ const IntroScreen = () => {
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
-            size="icon"
-            className="rounded-full border border-transparent hover:border-primary/30 hover:bg-primary/10"
+            className="gap-2 rounded-full border border-transparent hover:border-primary/30 hover:bg-primary/10 px-4"
             onClick={handleOpenSettings}
             title="Settings"
           >
-            <Settings className="w-5 h-5" />
+            <Settings className="w-4 h-4" />
+            <span className="text-sm font-medium">Settings</span>
           </Button>
         </div>
       </div>

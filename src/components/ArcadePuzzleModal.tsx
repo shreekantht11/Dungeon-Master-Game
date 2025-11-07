@@ -175,19 +175,20 @@ const ArcadePuzzleModal = () => {
 
   return (
     <Dialog open={!!activePuzzle} onOpenChange={(open) => !open && closeMiniGame()}>
-      <DialogContent className="max-w-3xl border-primary/40 bg-card/95 backdrop-blur">
+      <DialogContent className="max-w-3xl border-primary/40 bg-card/95 backdrop-blur max-h-[90vh] flex flex-col p-0 overflow-hidden">
         {activePuzzle && (
-          <div className="relative">
+          <div className="relative flex flex-col h-full max-h-[90vh]">
             <div className={`absolute inset-0 rounded-2xl bg-gradient-to-br ${gradient} pointer-events-none`} />
-            <div className="relative rounded-2xl border border-primary/30 bg-background/90 p-6 shadow-lg">
-              <DialogHeader className="mb-4">
+            <div className="relative rounded-2xl border border-primary/30 bg-background/90 shadow-lg flex flex-col h-full max-h-[90vh] overflow-hidden">
+              <DialogHeader className="mb-4 flex-shrink-0 px-6 pt-6">
                 <DialogTitle className="text-2xl font-fantasy text-primary flex items-center gap-2">
                   <Sparkles className="w-5 h-5" /> Mini-Game Challenge
                 </DialogTitle>
                 <p className="text-sm text-muted-foreground">{activePuzzle.description}</p>
               </DialogHeader>
 
-              <div className="flex flex-col gap-5">
+              <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6">
+                <div className="flex flex-col gap-5 pr-2">
                 <div className="flex flex-wrap items-center gap-3">
                   <Badge variant="outline" className="border-primary/40 bg-primary/10">
                     Difficulty: {activePuzzle.difficulty}
@@ -208,7 +209,7 @@ const ArcadePuzzleModal = () => {
                   )}
                 </div>
 
-                <div>
+                <div className="flex-shrink-0">
                   <h4 className="font-semibold text-lg mb-2 text-primary">{activePuzzle.question}</h4>
                   <div className="space-y-2">
                     {activePuzzle.options.map((option) => {
@@ -352,6 +353,7 @@ const ArcadePuzzleModal = () => {
                     </div>
                   </motion.div>
                 )}
+                </div>
               </div>
             </div>
           </div>

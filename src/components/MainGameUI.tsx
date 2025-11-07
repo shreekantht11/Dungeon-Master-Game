@@ -921,19 +921,19 @@ const MainGameUI = () => {
                 <p className="text-xs text-muted-foreground font-semibold mb-2">
                   What will you do?
                 </p>
-                <div className="grid grid-cols-1 gap-2">
+                <div className="grid grid-cols-1 gap-1.5">
                   {playerChoices.map((choice, index) => (
                     <Button
                       key={index}
                       onClick={() => handleChoice(choice)}
                       disabled={loadingStory}
-                      className={`w-full justify-start text-left h-auto py-2 px-4 bg-primary/10 hover:bg-primary/20 border-2 border-primary/30 hover:border-primary transition-all duration-300 group ${
+                      className={`w-full justify-start text-left h-auto py-1.5 px-3 bg-primary/10 hover:bg-primary/20 border border-primary/30 hover:border-primary transition-all duration-300 group ${
                         loadingStory ? 'opacity-60 cursor-not-allowed' : ''
                       }`}
                       variant="outline"
                     >
-                      <Play className="w-3.5 h-3.5 mr-2 group-hover:translate-x-1 transition-transform flex-shrink-0" />
-                      <span className="font-elegant text-sm leading-tight">{choice}</span>
+                      <Play className="w-3 h-3 mr-2 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+                      <span className="font-elegant text-xs leading-tight">{choice}</span>
                     </Button>
                   ))}
                 </div>

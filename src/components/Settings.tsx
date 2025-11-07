@@ -21,7 +21,8 @@ const Settings = () => {
     musicEnabled,
     updateSettings,
     setScreen,
-    gameStarted,
+    player,
+    gameState,
     authUser,
   } = useGameStore();
   
@@ -138,7 +139,15 @@ const Settings = () => {
         >
           <Button
             variant="ghost"
-            onClick={() => setScreen(gameStarted ? 'game' : 'intro')}
+            onClick={() => {
+              // Only go back to game if there's an active game session
+              // Check if player exists and game is initialized
+              if (player && gameState.isInitialized) {
+                setScreen('game');
+              } else {
+                setScreen('intro');
+              }
+            }}
             className="mb-6 hover:bg-primary/10"
           >
             <ArrowLeft className="mr-2" />

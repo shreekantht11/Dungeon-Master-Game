@@ -1892,7 +1892,7 @@ def serialize_save(save):
 @app.get("/api/saves/{player_id}")
 async def get_saves(player_id: str):
     """Endpoint to retrieve all save slots for a given player ID."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
     try:
         saves_cursor = db.saves.find({"playerId": player_id, "deletedAt": None}).sort("updatedAt", -1)
@@ -1910,7 +1910,7 @@ async def get_saves(player_id: str):
 @app.get("/api/load/{save_id}")
 async def load_game(save_id: str):
     """Endpoint to load a specific game save state by its MongoDB ObjectId."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
     try:
         obj_id = ObjectId(save_id) # Validate and convert string to ObjectId
@@ -1943,7 +1943,7 @@ async def load_game(save_id: str):
 @app.get("/api/load/by-name")
 async def load_by_name(name: str):
     """Load latest autosave for a player by name."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
 
     try:
@@ -1967,7 +1967,7 @@ async def load_by_name(name: str):
 @app.patch("/api/saves/{save_id}")
 async def rename_save(save_id: str, body: RenameSaveRequest):
     """Rename a specific save slot."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
 
     try:
@@ -1994,7 +1994,7 @@ async def rename_save(save_id: str, body: RenameSaveRequest):
 @app.delete("/api/saves/{save_id}")
 async def delete_save(save_id: str):
     """Soft delete a save by its ID (sets deletedAt)."""
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
 
     try:
@@ -2020,7 +2020,7 @@ async def delete_save(save_id: str):
 
 @app.post("/api/cameo/invite")
 async def create_cameo_invite(request: CameoInviteRequest):
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
 
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -2060,7 +2060,7 @@ async def create_cameo_invite(request: CameoInviteRequest):
 
 @app.post("/api/cameo/accept")
 async def accept_cameo_invite(request: CameoAcceptRequest):
-    if not db:
+    if db is None:
         raise HTTPException(status_code=503, detail="Database connection not available.")
 
     code = request.inviteCode.strip().upper()

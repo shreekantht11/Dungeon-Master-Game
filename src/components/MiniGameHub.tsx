@@ -8,7 +8,7 @@ import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import ArcadePuzzleModal from '@/components/ArcadePuzzleModal';
 import { toast } from 'sonner';
-import { Play, Trophy, Sparkles, Clock, Target } from 'lucide-react';
+import { Play, Trophy, Sparkles, Clock, Target, ArrowLeft } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
@@ -83,9 +83,19 @@ const MiniGameHub = ({ open, onOpenChange }: MiniGameHubProps) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-5xl border-primary/40 bg-card/95 backdrop-blur">
         <DialogHeader className="mb-4 space-y-1">
-          <DialogTitle className="flex items-center gap-2 text-2xl font-fantasy text-primary">
-            <Sparkles className="w-5 h-5" /> Puzzle Mini-Arcade
-          </DialogTitle>
+          <div className="flex items-center justify-between">
+            <DialogTitle className="flex items-center gap-2 text-2xl font-fantasy text-primary">
+              <Sparkles className="w-5 h-5" /> Puzzle Mini-Arcade
+            </DialogTitle>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onOpenChange(false)}
+              className="hover:bg-primary/10"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </Button>
+          </div>
           <p className="text-sm text-muted-foreground">
             Dive into standalone challenges, climb the leaderboard, and earn exclusive arcade badges.
           </p>

@@ -3,10 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import dungeonBg from '@/assets/dungeon-bg.jpg';
 import desertBg from '@/assets/desert-bg.jpg';
 import forestBg from '@/assets/forest-bg.jpg';
-import { Castle, Rocket, Search, Sparkles, Star, ArrowRight } from 'lucide-react';
+import { Castle, Rocket, Search, Sparkles, Star, ArrowRight, ArrowLeft } from 'lucide-react';
 
 const genres = [
   {
@@ -87,6 +88,14 @@ const GenreSelection = () => {
       </AnimatePresence>
 
       <div className="relative z-10 container mx-auto px-4 py-12">
+        <Button
+          variant="ghost"
+          onClick={() => setScreen('character')}
+          className="mb-6 hover:bg-primary/10"
+        >
+          <ArrowLeft className="mr-2" />
+          Back
+        </Button>
         <motion.div
           initial={{ opacity: 0, y: -30 }}
           animate={{ opacity: 1, y: 0 }}
