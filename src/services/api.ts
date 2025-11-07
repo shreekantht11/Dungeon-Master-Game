@@ -39,6 +39,8 @@ interface InitializeResponse {
   story: string;
   quest: any;
   items: Item[];
+  choices?: string[];
+  greeting?: string;
 }
 
 interface CombatRequest {
@@ -104,6 +106,7 @@ export const api = {
       console.error('Game initialization failed:', error);
       // Fallback
       return {
+        greeting: "Welcome, adventurer!",
         story: "You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls.",
         quest: {
           id: "quest_start_1",
@@ -116,7 +119,8 @@ export const api = {
         items: [
           { id: 'item_sword_1', name: 'Rusty Sword', type: 'weapon', effect: '+2 Attack', quantity: 1 },
           { id: 'item_potion_1', name: 'Health Potion', type: 'potion', effect: 'Restores 30 HP', quantity: 2 }
-        ]
+        ],
+        choices: ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
       };
     }
   },

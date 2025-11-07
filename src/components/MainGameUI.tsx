@@ -308,7 +308,7 @@ const MainGameUI = () => {
       </motion.div>
 
       {/* Main Game Container */}
-      <div className="relative z-10 h-screen flex flex-col">
+      <div className="relative z-10 h-screen flex flex-col overflow-hidden">
         {/* Top HUD */}
         <div className="p-4 bg-card/90 backdrop-blur-sm border-b-2 border-primary/30">
           <div className="container mx-auto flex items-center justify-between">
@@ -440,16 +440,16 @@ const MainGameUI = () => {
           </div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 container mx-auto p-4 flex gap-4">
+        {/* Main Content Area - Scrollable */}
+        <div className="flex-1 container mx-auto p-4 flex gap-4 overflow-y-auto">
           {/* Story Panel (Left) */}
-          <Card className="flex-1 panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-6 flex flex-col">
-            <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border">
+          <Card className="flex-1 panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-6 flex flex-col min-h-0">
+            <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border flex-shrink-0">
               <Book className="w-6 h-6 text-primary" />
               <h3 className="text-xl font-fantasy text-primary">The Tale Unfolds</h3>
             </div>
 
-            <ScrollArea className="flex-1 pr-4">
+            <ScrollArea className="flex-1 min-h-0 pr-4">
               <motion.div
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
@@ -468,13 +468,13 @@ const MainGameUI = () => {
               </motion.div>
             </ScrollArea>
 
-            {/* Player Choices */}
+            {/* Player Choices - Always visible at bottom */}
             {!isTyping && playerChoices.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.3 }}
-                className="space-y-3 mt-6 pt-6 border-t border-border"
+                className="space-y-3 mt-6 pt-6 border-t border-border flex-shrink-0"
               >
                 <p className="text-sm text-muted-foreground font-semibold mb-3">
                   What will you do?

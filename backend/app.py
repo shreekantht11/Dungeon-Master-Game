@@ -66,28 +66,108 @@ app = FastAPI(title="AI Dungeon Master API", lifespan=lifespan)
 
 # --- CORS ---
 cors_origin = os.getenv("CORS_ORIGIN", "http://localhost:5173") # Default to frontend dev server
+# Allow multiple origins for development
+allowed_origins = [
+    cors_origin,
+    "http://localhost:5173",
+    "http://localhost:8080",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:8080",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[cors_origin],
-    allow_credentials=True,
-    allow_methods=["*"],
+    allow_origins=allowed_origins,
+    allow_credentials=False,  # Set to False to allow all origins pattern
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # --- Gemini Setup ---
 gemini_api_key = os.getenv("GEMINI_API_KEY")
+model = None
+available_models = []
+selected_model_name = None
+
 if not gemini_api_key:
     logger.error("GEMINI_API_KEY not found in environment variables.")
-    # Allow running without API key for basic structure check, but log error.
-    model = None
 else:
     try:
         genai.configure(api_key=gemini_api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash') # Using flash for potentially faster responses
-        logger.info("Google Gemini AI model configured successfully.")
+        
+        # List available models FIRST and use them
+        try:
+            available_models_list = genai.list_models()
+            available_models = [m.name for m in available_models_list if 'generateContent' in m.supported_generation_methods]
+            logger.info(f"Found {len(available_models)} available models with generateContent support")
+            if available_models:
+                logger.info(f"Sample models: {available_models[:3]}")
+        except Exception as e:
+            logger.warning(f"Could not list models: {e}")
+        
+        # Priority order: prefer flash (faster), then pro (better quality)
+        preferred_model_patterns = [
+            'flash',  # Fast models first
+            'pro',    # Then quality models
+            'gemini', # Any gemini model
+        ]
+        
+        # Build list of models to try - use EXACT names from available_models
+        model_names_to_try = []
+        
+        # First, add preferred models from available_models list
+        for pattern in preferred_model_patterns:
+            for avail_model in available_models:
+                if pattern in avail_model.lower() and avail_model not in model_names_to_try:
+                    model_names_to_try.append(avail_model)
+        
+        # Then add any remaining gemini models
+        for avail_model in available_models:
+            if avail_model not in model_names_to_try:
+                model_names_to_try.append(avail_model)
+        
+        # If we have available models, use them. Otherwise try common names
+        if not model_names_to_try:
+            model_names_to_try = [
+                'gemini-1.5-flash-latest',
+                'gemini-1.5-pro-latest',
+                'gemini-1.5-flash',
+                'gemini-1.5-pro',
+                'gemini-pro',
+            ]
+        
+        # Try each model - use the exact name from available_models
+        for model_name in model_names_to_try:
+            try:
+                # Use the exact model name as it appears in the list
+                test_model = genai.GenerativeModel(model_name)
+                model = test_model
+                selected_model_name = model_name
+                logger.info(f"✓ Successfully configured Gemini model: '{model_name}'")
+                logger.info(f"  Model will be tested on first API call")
+                break
+            except Exception as e:
+                error_msg = str(e)
+                logger.warning(f"✗ Model '{model_name}' failed: {error_msg[:150]}")
+                continue
+        
+        if model is None:
+            logger.error(f"❌ Failed to configure any Gemini AI model.")
+            if available_models:
+                logger.error(f"Available models: {available_models[:10]}")
+                # Last resort: try the first available model without testing
+                try:
+                    first_model = available_models[0]
+                    model = genai.GenerativeModel(first_model)
+                    selected_model_name = first_model
+                    logger.warning(f"⚠ Using first available model without test: {first_model}")
+                except Exception as e:
+                    logger.error(f"❌ Even first model failed: {e}")
+            else:
+                logger.error("No available models found. Check your API key and permissions.")
     except Exception as e:
         logger.error(f"Failed to configure Gemini AI: {e}")
-        model = None # Set model to None if configuration fails
+        model = None
 
 # --- Pydantic Models ---
 # Simplified models based on frontend state and README examples
@@ -189,12 +269,16 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     - Level: {player.level}
     - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
 
-    This is the very beginning of the adventure. Generate:
-    1. A starting quest that fits the {genre} theme. The quest should be engaging and give the player a clear goal.
-    2. Initial loot/items appropriate for a level {player.level} {player.class_name} starting their adventure.
+    This is the very beginning of the adventure. You MUST generate SHORT and SIMPLE content:
+    1. A warm, personalized greeting (1-2 sentences) that welcomes {player.name} the {player.class_name}.
+    2. A starting quest that fits the {genre} theme. Keep it simple and clear (1-2 sentences).
+    3. Initial loot/items appropriate for a level {player.level} {player.class_name} (2-3 items).
+    4. An opening story scene (MAX 2-3 SHORT sentences, use simple English words). Set the stage, introduce the quest, and mention the items.
+    5. EXACTLY 3 distinct and meaningful choices for the player (keep choice text short, 3-5 words each).
 
     Format your response STRICTLY as JSON:
     {{
+      "greeting": "A warm, personalized greeting welcoming {player.name} the {player.class_name}",
       "quest": {{
         "id": "quest_start_1",
         "title": "Quest Title",
@@ -207,18 +291,38 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
         {{"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1}},
         {{"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}}
       ],
-      "story": "Opening narrative that introduces the quest and gives the player their starting items."
+      "story": "SHORT opening narrative (MAX 2-3 sentences, use simple English). Greet the player, introduce the quest, describe the scene briefly, and mention the starting items.",
+      "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"]
     }}
 
-    Important Notes:
-    -   Make the quest exciting and relevant to the {genre} theme.
-    -   Starting items should be appropriate for a beginner {player.class_name}.
+    CRITICAL Instructions:
+    -   Keep ALL text SHORT and SIMPLE. Use easy English words that a child could understand.
+    -   Story must be MAX 2-3 sentences. NO long paragraphs.
+    -   Use simple words: "go" not "proceed", "see" not "observe", "big" not "enormous".
+    -   Start with a warm greeting (1-2 sentences) mentioning player's name and class.
+    -   Quest description should be 1-2 sentences, simple and clear.
+    -   Choices must be SHORT (3-5 words each): "Go left", "Fight monster", "Run away".
     -   Ensure the JSON format is perfect, with keys and values in double quotes.
     -   Do NOT include explanations outside the JSON structure.
     """
 
     try:
-        response = await model.generate_content_async(prompt)
+        if model is None:
+            raise HTTPException(status_code=503, detail="Gemini AI model not configured. Please check GEMINI_API_KEY and available models.")
+        
+        try:
+            response = await model.generate_content_async(prompt)
+        except Exception as model_error:
+            error_str = str(model_error)
+            logger.error(f"Model API error (using '{selected_model_name}'): {error_str}")
+            # If it's a 404, the model name is wrong - try to find a working one
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.error(f"Model '{selected_model_name}' not found. Available models: {available_models[:5]}")
+                raise HTTPException(
+                    status_code=503, 
+                    detail=f"Model '{selected_model_name}' not available. Please check /api/models for available models."
+                )
+            raise
         if not response.candidates:
             raise HTTPException(status_code=500, detail="AI failed to generate initial content.")
         
@@ -230,11 +334,24 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
         if not ai_response_text:
             raise HTTPException(status_code=500, detail="AI response was empty or blocked.")
 
-        return parse_json_response(ai_response_text)
+        result = parse_json_response(ai_response_text)
+        
+        # Ensure choices are present
+        if "choices" not in result or not result.get("choices"):
+            result["choices"] = ["Explore the area", "Investigate further", "Proceed with caution"]
+        
+        # Combine greeting and story if greeting exists
+        if "greeting" in result and result.get("greeting"):
+            greeting = result["greeting"]
+            story = result.get("story", "")
+            result["story"] = f"{greeting}\n\n{story}"
+        
+        return result
     except Exception as e:
         logger.error(f"Error generating initial loot/quest: {e}")
-        # Fallback
+        # Fallback with choices
         return {
+            "greeting": f"Welcome, {player.name} the {player.class_name}!",
             "quest": {
                 "id": "quest_start_1",
                 "title": "The Beginning",
@@ -247,7 +364,8 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
                 {"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1},
                 {"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}
             ],
-            "story": "You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls."
+            "story": f"Welcome, {player.name} the {player.class_name}! You stand at the entrance of an ancient dungeon. The air is thick with mystery, and the flickering torchlight casts dancing shadows on the stone walls. You find a Rusty Sword and 2 Health Potions in your pack.",
+            "choices": ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
         }
 
 async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -281,26 +399,26 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
         phase_instruction = "You are running a SEPARATE, INDEPENDENT story for this player. Do not reference the other player. This player's story is unique to them."
     elif turn_count == 0:
         # Initial story turn
-        phase_instruction = "This is the first story turn. Generate an engaging opening scene with 2-3 paragraphs."
+        phase_instruction = "This is the first story turn. Generate a SHORT opening scene (MAX 2-3 sentences, use simple English words)."
     elif turn_count < 3 and story_phase == "exploration":
         # Story phase (2-3 turns)
-        phase_instruction = f"This is story turn {turn_count + 1} of the exploration phase. Continue building the narrative. After this turn, danger should appear."
+        phase_instruction = f"This is story turn {turn_count + 1} of the exploration phase. Continue building the narrative SHORTLY (MAX 2-3 sentences, simple English). After this turn, danger should appear."
     elif turn_count >= 3 and story_phase == "exploration":
         # Time for danger encounter
-        phase_instruction = "A dangerous situation or monster should appear now. Describe the threat but DO NOT automatically start combat. Give the player options to Attack, Run, Hide, or other creative choices."
+        phase_instruction = "A dangerous situation or monster should appear now. Describe the threat SHORTLY (MAX 2-3 sentences, simple English) but DO NOT automatically start combat. Give the player SHORT options like 'Attack', 'Run', 'Hide'."
         story_phase = "danger"
     elif story_phase == "danger" and choice and "attack" in choice.lower():
         # Player chose to attack - combat will start
-        phase_instruction = "The player has chosen to attack. Describe the beginning of combat but do NOT include an enemy object yet (combat will be handled separately)."
+        phase_instruction = "The player has chosen to attack. Describe the beginning of combat SHORTLY (MAX 2 sentences, simple English) but do NOT include an enemy object yet (combat will be handled separately)."
     elif is_after_combat:
         # Continue story after combat
-        phase_instruction = "The combat has ended. Continue the story narrative, describing what happens next."
+        phase_instruction = "The combat has ended. Continue the story narrative SHORTLY (MAX 2-3 sentences, simple English), describing what happens next."
     elif is_final_phase:
         # Final boss phase
-        phase_instruction = "This is the FINAL BATTLE phase. A powerful boss or final enemy should appear. Describe the epic confrontation. The player must fight - this is the climactic battle!"
+        phase_instruction = "This is the FINAL BATTLE phase. A powerful boss or final enemy should appear. Describe the epic confrontation SHORTLY (MAX 2-3 sentences, simple English). The player must fight - this is the climactic battle!"
         story_phase = "final"
     else:
-        phase_instruction = "Continue the story narrative."
+        phase_instruction = "Continue the story narrative SHORTLY (MAX 2-3 sentences, simple English)."
 
     # Build multiplayer context
     multiplayer_context = ""
@@ -335,18 +453,18 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
 
     {phase_instruction}
 
-    Generate the next part of the story:
-    1.  Write an engaging narrative continuation (1-3 paragraphs) based on the phase instruction above.
-    2.  Provide exactly 3 distinct and meaningful choices for the player.
-    3.  If in the "danger" phase and player hasn't chosen attack yet, include choices like "Attack", "Run", "Hide", or other creative options.
+    Generate the next part of the story (KEEP IT SHORT AND SIMPLE):
+    1.  Write a SHORT narrative continuation (MAX 2-3 sentences, use simple English words) based on the phase instruction above.
+    2.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away").
+    3.  If in the "danger" phase and player hasn't chosen attack yet, include choices like "Attack", "Run", "Hide" (keep them short).
     4.  DO NOT include an enemy object unless the player explicitly chooses to attack AND combat hasn't started yet.
     5.  Only include items if the player finds them in this specific moment.
-    6.  If this is after combat, continue the story naturally.
+    6.  If this is after combat, continue the story naturally but keep it SHORT (2-3 sentences max).
 
     Format your response STRICTLY as JSON:
     {{
-      "story": "Your narrative here...",
-      "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"],
+      "story": "Your SHORT narrative here (MAX 2-3 sentences, simple English)...",
+      "choices": ["Short choice 1", "Short choice 2", "Short choice 3"],
       "dangerEncounter": {{
         "description": "Description of the threat",
         "enemy": {{ "id": "enemy_goblin_1", "name": "Goblin Scout", "health": 30, "maxHealth": 30, "attack": 8, "defense": 4 }}
@@ -371,11 +489,21 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     """
 
     try:
-        response = await model.generate_content_async(prompt)
-        # Check for safety ratings if necessary (or rely on API's default blocking)
-        # print(response.prompt_feedback) # For debugging safety feedback
-        # print(response.candidates[0].finish_reason) # For debugging finish reason
-        # print(response.candidates[0].safety_ratings) # For debugging safety ratings
+        if model is None:
+            raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
+        
+        try:
+            response = await model.generate_content_async(prompt)
+        except Exception as model_error:
+            error_str = str(model_error)
+            logger.error(f"Model API error in story generation (using '{selected_model_name}'): {error_str}")
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.error(f"Model '{selected_model_name}' not found. Available: {available_models[:5]}")
+                raise HTTPException(
+                    status_code=503, 
+                    detail=f"Model '{selected_model_name}' not available. Check /api/models"
+                )
+            raise
 
         if not response.candidates:
              raise HTTPException(status_code=500, detail="AI failed to generate a response.")
@@ -459,7 +587,21 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
     """
 
     try:
-        response = await model.generate_content_async(prompt)
+        if model is None:
+            raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
+        
+        try:
+            response = await model.generate_content_async(prompt)
+        except Exception as model_error:
+            error_str = str(model_error)
+            logger.error(f"Model API error in combat (using '{selected_model_name}'): {error_str}")
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.error(f"Model '{selected_model_name}' not found. Available: {available_models[:5]}")
+                raise HTTPException(
+                    status_code=503, 
+                    detail=f"Model '{selected_model_name}' not available. Check /api/models"
+                )
+            raise
 
         if not response.candidates:
              raise HTTPException(status_code=500, detail="AI failed to generate a combat response.")
@@ -503,6 +645,31 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
         }
 
 # --- API Endpoints ---
+@app.options("/api/{path:path}")
+async def options_handler(path: str):
+    """Handle CORS preflight requests."""
+    return {"message": "OK"}
+
+@app.get("/api/models")
+async def list_models():
+    """List available Gemini models for debugging."""
+    if not gemini_api_key:
+        return {"error": "GEMINI_API_KEY not configured", "models": []}
+    try:
+        available_models_list = genai.list_models()
+        models_info = []
+        for m in available_models_list:
+            if 'generateContent' in m.supported_generation_methods:
+                models_info.append({
+                    "name": m.name,
+                    "display_name": m.display_name,
+                    "description": m.description,
+                })
+        return {"models": models_info, "count": len(models_info)}
+    except Exception as e:
+        logger.error(f"Error listing models: {e}")
+        return {"error": str(e), "models": []}
+
 @app.post("/api/initialize")
 async def api_initialize_game(request: StoryRequest):
     """Endpoint to initialize the game with initial loot and quest."""
@@ -511,10 +678,41 @@ async def api_initialize_game(request: StoryRequest):
             request.player,
             request.genre
         )
+        # Ensure all required fields are present
+        if "choices" not in result or not result.get("choices"):
+            result["choices"] = ["Explore", "Investigate", "Proceed"]
+        if "items" not in result:
+            result["items"] = []
+        if "quest" not in result:
+            result["quest"] = {
+                "id": "quest_start_1",
+                "title": "The Beginning",
+                "description": "Begin your adventure",
+                "type": "main",
+                "objectives": [],
+                "rewards": {"xp": 100, "gold": 50, "items": []}
+            }
         return result
     except Exception as e:
         logger.error(f"Error in /api/initialize endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        # Return fallback response instead of raising error
+        return {
+            "greeting": f"Welcome, {request.player.name}!",
+            "quest": {
+                "id": "quest_start_1",
+                "title": "The Beginning",
+                "description": "Begin your adventure",
+                "type": "main",
+                "objectives": [{"text": "Explore", "completed": False}],
+                "rewards": {"xp": 100, "gold": 50, "items": []}
+            },
+            "items": [
+                {"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1},
+                {"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}
+            ],
+            "story": f"Welcome, {request.player.name} the {request.player.class_name}! Your adventure begins...",
+            "choices": ["Explore", "Investigate", "Proceed"]
+        }
 
 @app.post("/api/story")
 async def api_generate_story(request: StoryRequest):
