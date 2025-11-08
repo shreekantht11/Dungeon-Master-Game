@@ -125,6 +125,7 @@ export interface AuthUser {
   email?: string;
   picture?: string;
   token?: string;
+  googleId?: string; // Google user ID (sub from OAuth)
 }
 
 export interface StoryEnding {
@@ -154,12 +155,103 @@ export interface DailyChallenge {
   objectives: Array<{ text: string; completed: boolean }>;
   rewards: {
     xp: number;
+    coins?: number;
     gold?: number;
     items?: string[];
     badge?: string;
   };
   completed: boolean;
   expiresAt: string;
+  category?: 'combat' | 'exploration' | 'collection' | 'social';
+}
+
+export interface DailyReward {
+  day: number;
+  coins: number;
+  items?: string[];
+  multiplier?: number;
+}
+
+export interface Milestone {
+  id: string;
+  title: string;
+  description: string;
+  category: 'combat' | 'exploration' | 'collection' | 'social' | 'story';
+  target: number;
+  current: number;
+  reward: {
+    coins?: number;
+    items?: string[];
+    unlock?: string;
+  };
+  completed: boolean;
+  completedAt?: string;
+}
+
+export interface GameEvent {
+  id: string;
+  name: string;
+  description: string;
+  type: 'double_xp' | 'treasure_hunt' | 'boss_rush' | 'collection' | 'community';
+  startDate: string;
+  endDate: string;
+  rewards: {
+    coins?: number;
+    items?: string[];
+    exclusive?: boolean;
+  };
+  active: boolean;
+}
+
+export interface CollectionSet {
+  id: string;
+  name: string;
+  description: string;
+  items: string[];
+  collected: number;
+  reward: {
+    coins?: number;
+    statBonus?: Record<string, number>;
+    unlock?: string;
+  };
+  completed: boolean;
+}
+
+export interface ProgressionStats {
+  totalPlaytime: number;
+  storiesCompleted: number;
+  enemiesDefeated: number;
+  itemsCollected: number;
+  locationsDiscovered: number;
+  achievementsUnlocked: number;
+  coinsEarned: number;
+  coinsSpent: number;
+  highestLevel: number;
+  lastUpdated: string;
+}
+
+export interface StoryBranch {
+  id: string;
+  title: string;
+  choices: string[];
+  ending?: string;
+  completedAt: string;
+  playtime: number;
+}
+
+export interface UnlockableContent {
+  id: string;
+  name: string;
+  description: string;
+  type: 'location' | 'vendor' | 'recipe' | 'ability' | 'cosmetic' | 'mode';
+  unlocked: boolean;
+  unlockRequirements: {
+    level?: number;
+    achievement?: string;
+    milestone?: string;
+    coins?: number;
+  };
+  preview?: string;
 }
 
 export interface Friend {
@@ -246,7 +338,7 @@ export interface StoryEvent {
 
 interface GameState {
   // Game State
-  currentScreen: 'intro' | 'character' | 'genre' | 'game' | 'settings' | 'shop' | 'crafting' | 'codex';
+  currentScreen: 'intro' | 'character' | 'genre' | 'game' | 'settings' | 'shop' | 'crafting' | 'codex' | 'milestones' | 'events' | 'collections' | 'progression' | 'replay' | 'leaderboards' | 'unlocks';
   gameStarted: boolean;
   genre: 'Fantasy' | 'Sci-Fi' | 'Mystery' | 'Mythical' | null;
   
@@ -294,6 +386,13 @@ interface GameState {
   addQuest: (quest: any) => void;
   completeQuest: (questId: string) => void;
   
+  // Score System
+  playerScore: number;
+  abandonedQuests: number;
+  updatePlayerScore: (score: number) => void;
+  incrementAbandonedQuests: () => void;
+  completeQuestWithScore: (questId: string) => void;
+  
   // Game State Tracking
   gameState: {
     turnCount: number;
@@ -318,6 +417,50 @@ interface GameState {
   setDailyChallenge: (challenge: DailyChallenge | null) => void;
   challengeStreak: number;
   setChallengeStreak: (streak: number) => void;
+  weeklyChallenge: DailyChallenge | null;
+  setWeeklyChallenge: (challenge: DailyChallenge | null) => void;
+  
+  // Daily Login Rewards
+  lastLoginDate: string | null;
+  lastRewardClaimTime: string | null; // ISO timestamp of last reward claim
+  loginStreak: number;
+  dailyRewardsClaimed: number; // Day in current cycle (1-7)
+  claimDailyReward: () => void;
+  
+  // Milestones
+  milestones: Milestone[];
+  setMilestones: (milestones: Milestone[]) => void;
+  updateMilestone: (milestoneId: string, progress: number) => void;
+  claimMilestone: (milestoneId: string) => void;
+  
+  // Events
+  currentEvents: GameEvent[];
+  setCurrentEvents: (events: GameEvent[]) => void;
+  
+  // Collections
+  collectionSets: CollectionSet[];
+  setCollectionSets: (sets: CollectionSet[]) => void;
+  updateCollection: (setId: string, itemId: string) => void;
+  
+  // Progression
+  progressionStats: ProgressionStats | null;
+  setProgressionStats: (stats: ProgressionStats) => void;
+  updateProgressionStats: (updates: Partial<ProgressionStats>) => void;
+  
+  // Story Replay
+  storyBranches: StoryBranch[];
+  addStoryBranch: (branch: StoryBranch) => void;
+  selectedBranch: StoryBranch | null;
+  setSelectedBranch: (branch: StoryBranch | null) => void;
+  
+  // Unlockable Content
+  unlockableContent: UnlockableContent[];
+  setUnlockableContent: (content: UnlockableContent[]) => void;
+  unlockContent: (contentId: string) => void;
+  
+  // Seasonal Content
+  seasonalEvents: SeasonalEvent[];
+  setSeasonalEvents: (events: SeasonalEvent[]) => void;
   
   // Social Features
   friends: Friend[];
@@ -410,6 +553,8 @@ const initialState = {
   },
   activeQuests: [],
   completedQuests: [],
+  playerScore: 100,
+  abandonedQuests: 0,
   gameState: {
     turnCount: 0,
     storyPhase: 'exploration',
@@ -439,11 +584,43 @@ const initialState = {
     lore: {} as Record<string, any>,
   },
   learnedRecipes: [] as string[],
+  weeklyChallenge: null as DailyChallenge | null,
+  lastLoginDate: null as string | null,
+  lastRewardClaimTime: null as string | null,
+  loginStreak: 0,
+  dailyRewardsClaimed: 0,
+  milestones: [] as Milestone[],
+  currentEvents: [] as GameEvent[],
+  collectionSets: [] as CollectionSet[],
+  progressionStats: null as ProgressionStats | null,
+  storyBranches: [] as StoryBranch[],
+  selectedBranch: null as StoryBranch | null,
+  unlockableContent: [] as UnlockableContent[],
+  seasonalEvents: [] as SeasonalEvent[],
   language: 'English' as const,
   textSpeed: 50,
   soundEnabled: true,
   musicEnabled: true,
 };
+
+// Load authUser from localStorage on initialization
+const loadAuthFromStorage = (): AuthUser | null => {
+  try {
+    const stored = localStorage.getItem('gilded-scrolls-auth');
+    if (stored) {
+      return JSON.parse(stored);
+    }
+  } catch (e) {
+    console.error('Failed to load auth from localStorage:', e);
+  }
+  return null;
+};
+
+// Initialize with auth from localStorage if available
+const initialAuthUser = loadAuthFromStorage();
+if (initialAuthUser) {
+  initialState.authUser = initialAuthUser;
+}
 
 export const useGameStore = create<GameState>((set) => ({
   ...initialState,
@@ -592,9 +769,27 @@ export const useGameStore = create<GameState>((set) => ({
       };
     }),
 
-  setAuthUser: (user) => set({ authUser: user }),
+  setAuthUser: (user) => {
+    // Save to localStorage when setting auth user
+    if (user) {
+      try {
+        localStorage.setItem('gilded-scrolls-auth', JSON.stringify(user));
+      } catch (e) {
+        console.error('Failed to save auth to localStorage:', e);
+      }
+    }
+    set({ authUser: user });
+  },
 
-  clearAuthUser: () => set({ authUser: null }),
+  clearAuthUser: () => {
+    // Remove from localStorage when clearing auth
+    try {
+      localStorage.removeItem('gilded-scrolls-auth');
+    } catch (e) {
+      console.error('Failed to remove auth from localStorage:', e);
+    }
+    set({ authUser: null });
+  },
 
   setMiniGameLoading: (loading) =>
     set((state) => ({ miniGames: { ...state.miniGames, loading } })),
@@ -965,9 +1160,16 @@ export const useGameStore = create<GameState>((set) => ({
     })),
   
   addQuest: (quest) =>
-    set((state) => ({
-      activeQuests: [...state.activeQuests, quest],
-    })),
+    set((state) => {
+      // Check if quest already exists to prevent duplicates
+      const existingQuest = state.activeQuests.find((q) => q.id === quest.id);
+      if (existingQuest) {
+        return state; // Quest already exists, don't add duplicate
+      }
+      return {
+        activeQuests: [...state.activeQuests, quest],
+      };
+    }),
   
   completeQuest: (questId) =>
     set((state) => {
@@ -976,6 +1178,29 @@ export const useGameStore = create<GameState>((set) => ({
       return {
         activeQuests: state.activeQuests.filter((q) => q.id !== questId),
         completedQuests: [...state.completedQuests, { ...quest, completed: true }],
+      };
+    }),
+
+  // Score System Actions
+  updatePlayerScore: (score) =>
+    set({ playerScore: Math.max(0, score) }), // Ensure score doesn't go below 0
+
+  incrementAbandonedQuests: () =>
+    set((state) => ({
+      abandonedQuests: state.abandonedQuests + 1,
+      playerScore: Math.max(0, state.playerScore - 10), // Decrease score by 10 per abandoned quest
+    })),
+
+  completeQuestWithScore: (questId) =>
+    set((state) => {
+      const quest = state.activeQuests.find((q) => q.id === questId);
+      if (!quest) return state;
+      // Increase score by 20 and reset abandoned quests counter
+      return {
+        activeQuests: state.activeQuests.filter((q) => q.id !== questId),
+        completedQuests: [...state.completedQuests, { ...quest, completed: true }],
+        playerScore: state.playerScore + 20,
+        abandonedQuests: 0, // Reset counter on quest completion
       };
     }),
   
@@ -1003,6 +1228,189 @@ export const useGameStore = create<GameState>((set) => ({
   
   setChallengeStreak: (streak) =>
     set({ challengeStreak: streak }),
+  
+  setWeeklyChallenge: (challenge) =>
+    set({ weeklyChallenge: challenge }),
+  
+  // Daily Login Rewards Actions
+  claimDailyReward: () =>
+    set((state) => {
+      const now = new Date();
+      const nowISO = now.toISOString();
+      const today = nowISO.split('T')[0];
+      
+      // Check if reward was already claimed today
+      if (state.lastRewardClaimTime) {
+        const lastClaimDate = new Date(state.lastRewardClaimTime);
+        const lastClaimDateStr = lastClaimDate.toISOString().split('T')[0];
+        
+        // If already claimed today, don't allow another claim
+        if (lastClaimDateStr === today) {
+          return state;
+        }
+      }
+      
+      const lastLogin = state.lastLoginDate;
+      let newStreak = state.loginStreak;
+      let newDay = state.dailyRewardsClaimed;
+      
+      // Check if streak should continue or reset
+      if (lastLogin) {
+        const lastDate = new Date(lastLogin);
+        const todayDate = new Date(today);
+        const daysDiff = Math.floor((todayDate.getTime() - lastDate.getTime()) / (1000 * 60 * 60 * 24));
+        
+        if (daysDiff === 1) {
+          // Consecutive day
+          newStreak = state.loginStreak + 1;
+          newDay = state.dailyRewardsClaimed + 1;
+        } else if (daysDiff > 1) {
+          // Streak broken
+          newStreak = 1;
+          newDay = 1;
+        } else if (daysDiff === 0) {
+          // Same day - should not happen due to check above, but handle gracefully
+          return state;
+        }
+      } else {
+        // First login
+        newStreak = 1;
+        newDay = 1;
+      }
+      
+      // Calculate multiplier
+      let multiplier = 1;
+      if (newStreak >= 7) multiplier = 2;
+      else if (newStreak >= 4) multiplier = 1.5;
+      
+      // Reward structure
+      const rewards = [
+        { coins: 50 },
+        { coins: 75, items: ['potion_health'] },
+        { coins: 100 },
+        { coins: 150, items: ['item_common'] },
+        { coins: 200 },
+        { coins: 250, items: ['item_uncommon'] },
+        { coins: 500, items: ['item_rare', 'item_xp_booster'] },
+      ];
+      
+      const dayReward = rewards[newDay - 1] || rewards[0];
+      const finalCoins = Math.floor(dayReward.coins * multiplier);
+      
+      // Add rewards
+      if (state.player) {
+        state.addCoins(finalCoins);
+        if (dayReward.items) {
+          dayReward.items.forEach((itemId) => {
+            state.addItem({
+              id: itemId,
+              name: itemId.replace('_', ' '),
+              type: itemId.includes('potion') ? 'potion' : 'quest',
+              quantity: 1,
+            });
+          });
+        }
+      }
+      
+      return {
+        lastLoginDate: today,
+        lastRewardClaimTime: nowISO, // Store exact timestamp
+        loginStreak: newStreak,
+        dailyRewardsClaimed: newDay >= 7 ? 0 : newDay,
+      };
+    }),
+  
+  // Milestones Actions
+  setMilestones: (milestones) =>
+    set({ milestones }),
+  
+  updateMilestone: (milestoneId, progress) =>
+    set((state) => ({
+      milestones: state.milestones.map((m) =>
+        m.id === milestoneId
+          ? { ...m, current: Math.min(progress, m.target), completed: progress >= m.target && !m.completed }
+          : m
+      ),
+    })),
+  
+  claimMilestone: (milestoneId) =>
+    set((state) => {
+      const milestone = state.milestones.find((m) => m.id === milestoneId);
+      if (!milestone || !milestone.completed || milestone.completedAt) return state;
+      
+      // Add rewards
+      if (milestone.reward.coins && state.player) {
+        state.addCoins(milestone.reward.coins);
+      }
+      if (milestone.reward.items) {
+        milestone.reward.items.forEach((itemId) => {
+          state.addItem({
+            id: itemId,
+            name: itemId.replace('_', ' '),
+            type: 'quest',
+            quantity: 1,
+          });
+        });
+      }
+      
+      return {
+        milestones: state.milestones.map((m) =>
+          m.id === milestoneId ? { ...m, completedAt: new Date().toISOString() } : m
+        ),
+      };
+    }),
+  
+  // Events Actions
+  setCurrentEvents: (events) =>
+    set({ currentEvents: events }),
+  
+  // Collections Actions
+  setCollectionSets: (sets) =>
+    set({ collectionSets: sets }),
+  
+  updateCollection: (setId, itemId) =>
+    set((state) => ({
+      collectionSets: state.collectionSets.map((set) =>
+        set.id === setId && !set.items.includes(itemId)
+          ? { ...set, items: [...set.items, itemId], collected: set.collected + 1, completed: set.collected + 1 >= set.items.length }
+          : set
+      ),
+    })),
+  
+  // Progression Actions
+  setProgressionStats: (stats) =>
+    set({ progressionStats: stats }),
+  
+  updateProgressionStats: (updates) =>
+    set((state) => ({
+      progressionStats: state.progressionStats
+        ? { ...state.progressionStats, ...updates, lastUpdated: new Date().toISOString() }
+        : null,
+    })),
+  
+  // Story Replay Actions
+  addStoryBranch: (branch) =>
+    set((state) => ({
+      storyBranches: [...state.storyBranches, branch],
+    })),
+  
+  setSelectedBranch: (branch) =>
+    set({ selectedBranch: branch }),
+  
+  // Unlockable Content Actions
+  setUnlockableContent: (content) =>
+    set({ unlockableContent: content }),
+  
+  unlockContent: (contentId) =>
+    set((state) => ({
+      unlockableContent: state.unlockableContent.map((c) =>
+        c.id === contentId ? { ...c, unlocked: true } : c
+      ),
+    })),
+  
+  // Seasonal Content Actions
+  setSeasonalEvents: (events) =>
+    set({ seasonalEvents: events }),
   
   // Social Features Actions
   setFriends: (friends) =>

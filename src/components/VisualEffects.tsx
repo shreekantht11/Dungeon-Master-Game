@@ -22,32 +22,6 @@ const VisualEffects = ({ type, trigger, position = { x: 50, y: 50 } }: VisualEff
   const [particles, setParticles] = useState<Particle[]>([]);
   const [screenShake, setScreenShake] = useState(false);
 
-  useEffect(() => {
-    if (!trigger) return;
-
-    switch (type) {
-      case 'combat-hit':
-        generateParticles(10, 'destructive');
-        triggerScreenShake();
-        break;
-      case 'level-up':
-        generateParticles(30, 'primary');
-        break;
-      case 'heal':
-        generateParticles(15, 'success');
-        break;
-      case 'magic':
-        generateParticles(20, 'magic');
-        break;
-      case 'victory':
-        generateParticles(50, 'gold');
-        break;
-      case 'ambient':
-        generateAmbientParticles();
-        break;
-    }
-  }, [trigger, type]);
-
   const generateParticles = (count: number, colorType: string) => {
     const colors = {
       destructive: '#ef4444',
@@ -101,6 +75,37 @@ const VisualEffects = ({ type, trigger, position = { x: 50, y: 50 } }: VisualEff
     setScreenShake(true);
     setTimeout(() => setScreenShake(false), 300);
   };
+
+  useEffect(() => {
+    if (!trigger) {
+      setParticles([]);
+      setScreenShake(false);
+      return;
+    }
+
+    switch (type) {
+      case 'combat-hit':
+        generateParticles(10, 'destructive');
+        triggerScreenShake();
+        break;
+      case 'level-up':
+        generateParticles(30, 'primary');
+        break;
+      case 'heal':
+        generateParticles(15, 'success');
+        break;
+      case 'magic':
+        generateParticles(20, 'magic');
+        break;
+      case 'victory':
+        generateParticles(50, 'gold');
+        break;
+      case 'ambient':
+        generateAmbientParticles();
+        break;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trigger, type]);
 
   return (
     <>

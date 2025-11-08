@@ -2,7 +2,6 @@ import { motion } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { CheckCircle2, Circle, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -29,15 +28,14 @@ const QuestTracker = () => {
             <Star className="w-5 h-5 text-primary" />
             Active Quests
           </h3>
-          <ScrollArea className="h-[300px] pr-4">
-            <div className="space-y-4">
+          <div className="space-y-4">
               {activeQuests.map((quest: any, index: number) => (
                 <motion.div
                   key={quest.id}
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.1 }}
-                  className="bg-card border border-border rounded-lg p-4 space-y-3"
+                  className="bg-card border border-border rounded-lg p-4 space-y-3 min-h-0"
                 >
                   <div className="flex items-start justify-between">
                     <div>
@@ -92,15 +90,18 @@ const QuestTracker = () => {
                       {quest.rewards.gold && (
                         <Badge variant="outline">💰 {quest.rewards.gold} Gold</Badge>
                       )}
-                      {quest.rewards.items?.map((item: string, i: number) => (
-                        <Badge key={i} variant="outline">{item}</Badge>
-                      ))}
+                      {quest.rewards.items?.map((item: any, i: number) => {
+                        // Handle both string and object formats
+                        const itemName = typeof item === 'string' ? item : (item?.name || item?.id || 'Item');
+                        return (
+                          <Badge key={i} variant="outline">{itemName}</Badge>
+                        );
+                      })}
                     </div>
                   )}
                 </motion.div>
               ))}
-            </div>
-          </ScrollArea>
+          </div>
         </div>
       )}
 
@@ -111,8 +112,7 @@ const QuestTracker = () => {
             <CheckCircle2 className="w-5 h-5" />
             Completed ({completedQuests.length})
           </h3>
-          <ScrollArea className="h-[150px] pr-4">
-            <div className="space-y-2">
+          <div className="space-y-2">
               {completedQuests.map((quest: any) => (
                 <div
                   key={quest.id}
@@ -121,8 +121,7 @@ const QuestTracker = () => {
                   <p className="font-medium text-sm line-through">{quest.title}</p>
                 </div>
               ))}
-            </div>
-          </ScrollArea>
+          </div>
         </div>
       )}
     </div>

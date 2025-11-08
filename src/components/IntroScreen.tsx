@@ -5,15 +5,19 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Card } from '@/components/ui/card';
 import dungeonBg from '@/assets/dungeon-bg.jpg';
-import { Sword, Play, Settings, BookOpen, Moon, Sun, User, Clock, Award, Sparkles } from 'lucide-react';
+import { Sword, Play, Settings, BookOpen, Moon, Sun, User, Award, Sparkles, LogOut } from 'lucide-react';
 import { api } from '@/services/api';
 import { useGoogleLogin } from '@react-oauth/google';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { toast } from 'sonner';
 import MiniGameHub from '@/components/MiniGameHub';
 import { useTheme } from 'next-themes';
+import LoadGameDialog from '@/components/LoadGameDialog';
+import NewGameDialog from '@/components/NewGameDialog';
+import { getPlayerId } from '@/utils/playerId';
 
 const IntroScreen = () => {
+  const player = useGameStore((state) => state.player);
   const setScreen = useGameStore((state) => state.setScreen);
   const updateStory = useGameStore((s) => s.updateStory);
   const setPlayerChoices = useGameStore((s) => s.setPlayerChoices);
@@ -25,13 +29,16 @@ const IntroScreen = () => {
   const authUser = useGameStore((s) => s.authUser);
   const setAuthUser = useGameStore((s) => s.setAuthUser);
   const clearAuthUser = useGameStore((s) => s.clearAuthUser);
-  const [showContinue, setShowContinue] = useState(false);
+  const resetGame = useGameStore((s) => s.resetGame);
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
-  const [quickStats, setQuickStats] = useState<{ player?: any; lastPlayed?: string } | null>(null);
   const googleEnabled = Boolean(import.meta.env.VITE_GOOGLE_CLIENT_ID);
   const { theme, setTheme } = useTheme();
   const [arcadeOpen, setArcadeOpen] = useState(false);
+  const [showLoadDialog, setShowLoadDialog] = useState(false);
+  const [showNewGameDialog, setShowNewGameDialog] = useState(false);
+  const [savePreview, setSavePreview] = useState<any>(null);
+  const [pendingName, setPendingName] = useState<string>('');
 
   const handleOpenSettings = () => setScreen('settings');
 
@@ -57,11 +64,14 @@ const IntroScreen = () => {
         if (!profile?.name) {
           throw new Error('Unable to read Google profile');
         }
+        // Extract Google ID (sub) from profile
+        const googleId = profile.sub || profile.id;
         setAuthUser({
           name: profile.name,
           email: profile.email,
           picture: profile.picture,
           token: tokenResponse.access_token,
+          googleId: googleId,
         });
         setName(profile.name);
         toast.success(`Signed in as ${profile.name}`);
@@ -84,44 +94,9 @@ const IntroScreen = () => {
     }
   }, [authUser?.name]);
 
-  // Load quick stats for returning user
-  useEffect(() => {
-    const loadQuickStats = async () => {
-      if (!authUser?.name) return;
-      try {
-        const saves = await api.getSaves(authUser.name);
-        if (saves && saves.length > 0) {
-          const latest = saves[0];
-          if (latest.updatedAt) {
-            const lastPlayed = new Date(latest.updatedAt);
-            const now = new Date();
-            const diffMs = now.getTime() - lastPlayed.getTime();
-            const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-            const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-            const diffMins = Math.floor(diffMs / (1000 * 60));
-            
-            let timeAgo = '';
-            if (diffDays > 0) {
-              timeAgo = `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
-            } else if (diffHours > 0) {
-              timeAgo = `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
-            } else if (diffMins > 0) {
-              timeAgo = `${diffMins} minute${diffMins > 1 ? 's' : ''} ago`;
-            } else {
-              timeAgo = 'Just now';
-            }
+  // Auto-load disabled - players now choose between Load Saved Game and New Game
+  // This gives players control over whether to continue or start fresh
 
-            setQuickStats({
-              lastPlayed: timeAgo,
-            });
-          }
-        }
-      } catch (e) {
-        // Silently fail - user might not have saves yet
-      }
-    };
-    loadQuickStats();
-  }, [authUser?.name]);
 
   const handleSignOut = () => {
     clearAuthUser();
@@ -129,42 +104,161 @@ const IntroScreen = () => {
     toast('Signed out', { description: 'Come back soon, adventurer!' });
   };
 
-  const handleContinue = async () => {
-    if (!name.trim()) return;
+
+  const handleLoadGame = async () => {
+    if (!pendingName.trim()) return;
     setLoading(true);
     try {
-      const loaded = await api.loadGameByName(name.trim());
-      // Hydrate minimal fields
-      if (loaded?.player) useGameStore.setState({ player: loaded.player });
-      if (loaded?.genre) setGenre(loaded.genre);
-      if (loaded?.story) updateStory(loaded.story);
-      if (Array.isArray(loaded?.choices)) setPlayerChoices(loaded.choices);
-      if (loaded?.puzzle) setPuzzle(loaded.puzzle);
-      if (Array.isArray(loaded?.badges)) {
-        setBadges(loaded.badges);
-      } else {
-        setBadges([]);
+      const loaded = await api.loadGameByName(pendingName.trim());
+      // Use deserializeGameState to restore complete state
+      const { deserializeGameState } = await import('@/utils/saveState');
+      const restoredState = deserializeGameState(loaded);
+      
+      // Verify player data was loaded
+      if (!restoredState.player) {
+        throw new Error('Player data not found in save');
       }
-      if (Array.isArray(loaded?.cameos)) {
-        setCameos(loaded.cameos);
-      } else {
-        setCameos([]);
-      }
+      
+      // Log what was loaded for verification
+      console.log('Loading game data:', {
+        playerName: restoredState.player.name,
+        level: restoredState.player.level,
+        coins: restoredState.player.coins,
+        inventoryCount: restoredState.player.inventory?.length || 0,
+        equippedItems: Object.keys(restoredState.player.equippedItems || {}).length,
+      });
+      
+      // Restore all game state
+      useGameStore.setState(restoredState);
+      
+      // Ensure game is initialized
       updateGameState({
-        turnCount: loaded?.turnCount ?? 0,
-        storyPhase: loaded?.storyPhase ?? 'exploration',
-        combatEncounters: loaded?.combatEncounters ?? 0,
-        combatEscapes: loaded?.combatEscapes ?? 0,
-        isAfterCombat: loaded?.isAfterCombat ?? false,
-        isFinalPhase: loaded?.isFinalPhase ?? false,
         isInitialized: true,
       });
+      
       setScreen('game');
+      toast.success('Game loaded successfully!', {
+        description: `Welcome back! Level ${restoredState.player.level}, ${restoredState.player.coins} coins`,
+      });
     } catch (e) {
-      console.error('Continue by name failed', e);
+      console.error('Load game failed', e);
       toast.error('Could not load save', {
         description: 'Check the player name and try again.',
       });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStartNew = () => {
+    setScreen('character');
+  };
+
+  const handleLoadSavedGame = async () => {
+    if (!authUser) return;
+    
+    setLoading(true);
+    try {
+      const playerId = getPlayerId();
+      if (!playerId) {
+        toast.error('Unable to identify player');
+        setLoading(false);
+        return;
+      }
+
+      const saves = await api.getSaves(playerId);
+      if (saves && saves.length > 0) {
+        const latest = saves[0];
+        setSavePreview({
+          name: authUser.name,
+          level: latest.preview?.level || 1,
+          class: latest.preview?.class || 'Unknown',
+        });
+        setShowLoadDialog(true);
+      } else {
+        toast.info('No saved game found', {
+          description: 'Starting a new game...',
+        });
+        setScreen('character');
+      }
+    } catch (e) {
+      console.error('Load saved game failed', e);
+      toast.error('Could not check for saved games');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleNewGame = async () => {
+    if (!authUser) {
+      // For non-logged-in users, just go to character creation
+      setScreen('character');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const playerId = getPlayerId();
+      if (!playerId) {
+        // No player ID, just start new game
+        resetGame();
+        setScreen('character');
+        setLoading(false);
+        return;
+      }
+
+      // Check for existing saves
+      const saves = await api.getSaves(playerId);
+      if (saves && saves.length > 0) {
+        const latest = saves[0];
+        setSavePreview({
+          name: authUser.name,
+          level: latest.preview?.level || 1,
+          class: latest.preview?.class || 'Unknown',
+        });
+        setShowNewGameDialog(true);
+      } else {
+        // No saves, just start new game
+        resetGame();
+        setScreen('character');
+      }
+    } catch (e) {
+      console.error('Check saves failed', e);
+      // If check fails, just start new game
+      resetGame();
+      setScreen('character');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirmNewGame = async () => {
+    setLoading(true);
+    try {
+      const playerId = getPlayerId();
+      if (playerId) {
+        // Delete all existing saves
+        const saves = await api.getSaves(playerId);
+        if (saves && saves.length > 0) {
+          for (const save of saves) {
+            try {
+              await api.deleteSave(save.saveId);
+            } catch (e) {
+              console.error('Failed to delete save:', save.saveId, e);
+            }
+          }
+        }
+      }
+
+      // Reset game state
+      resetGame();
+      
+      // Navigate to character creation
+      setScreen('character');
+      toast.success('Starting new game...');
+    } catch (e) {
+      console.error('Start new game failed', e);
+      toast.error('Failed to start new game');
     } finally {
       setLoading(false);
     }
@@ -218,6 +312,17 @@ const IntroScreen = () => {
           <Sparkles className="w-4 h-4" /> Mini-Game Arcade
         </Button>
         <div className="flex items-center gap-3">
+          {authUser && (
+            <Button
+              variant="ghost"
+              className="gap-2 rounded-full border border-transparent hover:border-primary/30 hover:bg-primary/10 px-4"
+              onClick={() => setScreen('profile')}
+              title="Profile"
+            >
+              <User className="w-4 h-4" />
+              <span className="text-sm font-medium">Profile</span>
+            </Button>
+          )}
           <Button
             variant="ghost"
             className="gap-2 rounded-full border border-transparent hover:border-primary/30 hover:bg-primary/10 px-4"
@@ -227,6 +332,20 @@ const IntroScreen = () => {
             <Settings className="w-4 h-4" />
             <span className="text-sm font-medium">Settings</span>
           </Button>
+          {authUser && (
+            <Button
+              variant="ghost"
+              className="gap-2 rounded-full border border-transparent hover:border-destructive/30 hover:bg-destructive/10 px-4"
+              onClick={() => {
+                clearAuthUser();
+                toast.success('Logged out successfully');
+              }}
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="text-sm font-medium">Logout</span>
+            </Button>
+          )}
         </div>
       </div>
 
@@ -253,24 +372,6 @@ const IntroScreen = () => {
           </p>
         </motion.div>
 
-        {/* Quick Stats Preview */}
-        {quickStats && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6, delay: 0.3 }}
-            className="mb-6 w-full max-w-2xl"
-          >
-            <Card className="bg-card/90 backdrop-blur-sm border-primary/30 p-4">
-              <div className="flex items-center gap-4 text-sm">
-                <Clock className="w-4 h-4 text-primary" />
-                <span className="text-muted-foreground">
-                  Last played: <span className="font-semibold text-foreground">{quickStats.lastPlayed}</span>
-                </span>
-              </div>
-            </Card>
-          </motion.div>
-        )}
 
         {/* Action Buttons */}
         <motion.div
@@ -279,36 +380,38 @@ const IntroScreen = () => {
           transition={{ duration: 1, delay: 0.5 }}
           className="flex flex-col gap-4 w-full max-w-2xl"
         >
-          <Button
-            onClick={() => setScreen('character')}
-            className="h-16 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg hover:shadow-xl transition-all duration-300 group"
-          >
-            <Play className="mr-2 group-hover:translate-x-1 transition-transform" />
-            Begin Your Journey
-          </Button>
+          {authUser ? (
+            // Logged-in user: Show two buttons
+            <div className="flex flex-col gap-3">
+              <Button
+                onClick={handleLoadSavedGame}
+                disabled={loading}
+                className="h-16 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg hover:shadow-xl transition-all duration-300 group"
+              >
+                <BookOpen className="mr-2 group-hover:translate-x-1 transition-transform" />
+                Load Saved Game
+              </Button>
+              <Button
+                onClick={handleNewGame}
+                disabled={loading}
+                variant="outline"
+                className="h-16 text-lg font-semibold border-2 border-primary/30 hover:border-primary/60 bg-card/80 hover:bg-card transition-all duration-300 group"
+              >
+                <Play className="mr-2 group-hover:translate-x-1 transition-transform" />
+                New Game
+              </Button>
+            </div>
+          ) : (
+            // Non-logged-in user: Show original button
+            <Button
+              onClick={() => setScreen('character')}
+              className="h-16 text-lg font-semibold bg-primary hover:bg-primary/90 text-primary-foreground shadow-lg hover:shadow-xl transition-all duration-300 group"
+            >
+              <Play className="mr-2 group-hover:translate-x-1 transition-transform" />
+              Begin Your Journey
+            </Button>
+          )}
 
-          <div className="space-y-4 rounded-2xl border border-primary/20 bg-background/80 p-4">
-          <Button
-            variant="secondary"
-              className="h-14 w-full text-lg bg-card/80 hover:bg-card border-2 border-primary/30 hover:border-primary/60 transition-all duration-300"
-              onClick={() => setShowContinue((v) => !v)}
-          >
-            <BookOpen className="mr-2" />
-            Continue Adventure
-          </Button>
-            {showContinue && (
-              <div className="flex gap-2">
-                <Input
-                  placeholder="Enter player name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="flex-1"
-                />
-                <Button onClick={handleContinue} disabled={loading || !name.trim()}>
-                  {loading ? 'Loading...' : 'Load'}
-                </Button>
-              </div>
-            )}
 
             <div className="rounded-xl border border-primary/30 bg-primary/5 p-4">
               {!authUser ? (
@@ -366,19 +469,18 @@ const IntroScreen = () => {
                 </div>
               )}
             </div>
-          </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="ghost"
-              onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-              className="h-12 w-12 hover:bg-primary/10 transition-all duration-300"
-              title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            >
-              {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
-            </Button>
-          </div>
-        </motion.div>
+            <div className="flex gap-2">
+              <Button
+                variant="ghost"
+                onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
+                className="h-12 w-12 hover:bg-primary/10 transition-all duration-300"
+                title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+              >
+                {theme === 'dark' ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              </Button>
+            </div>
+          </motion.div>
 
         {/* Footer */}
         <motion.footer
@@ -392,6 +494,28 @@ const IntroScreen = () => {
       </div>
 
       <MiniGameHub open={arcadeOpen} onOpenChange={setArcadeOpen} />
+      
+      {/* Load Game Confirmation Dialog */}
+      {savePreview && (
+        <LoadGameDialog
+          open={showLoadDialog}
+          onOpenChange={setShowLoadDialog}
+          savePreview={savePreview}
+          onLoad={handleLoadGame}
+          onStartNew={handleStartNew}
+        />
+      )}
+
+      {/* New Game Confirmation Dialog */}
+      {savePreview && (
+        <NewGameDialog
+          open={showNewGameDialog}
+          onOpenChange={setShowNewGameDialog}
+          savePreview={savePreview}
+          onConfirm={handleConfirmNewGame}
+          onCancel={() => setShowNewGameDialog(false)}
+        />
+      )}
     </div>
   );
 };

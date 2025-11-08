@@ -277,6 +277,7 @@ class CombatRequest(BaseModel):
 
 class SaveData(BaseModel):
     playerId: str = Field(..., description="Identifier for the player (e.g., user ID or player name)")
+    googleId: Optional[str] = Field(None, description="Google user ID for authenticated users")
     saveSlot: int = Field(..., description="Slot number (e.g., 1, 2, 3)")
     saveName: str = Field(..., description="User-friendly name for the save")
     gameState: Dict[str, Any] = Field(..., description="Complete snapshot of the game state")
@@ -284,6 +285,12 @@ class SaveData(BaseModel):
     schemaVersion: int = Field(default=1, description="Document schema version for migrations")
     badges: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Unlocked milestone badges")
     cameos: Optional[List[Dict[str, Any]]] = Field(default_factory=list, description="Invited cameo guest characters")
+
+class PlayerData(BaseModel):
+    googleId: Optional[str] = Field(None, description="Google user ID")
+    name: str = Field(..., description="Player name")
+    email: Optional[str] = Field(None, description="Email address")
+    picture: Optional[str] = Field(None, description="Profile picture URL")
 
 
 class RenameSaveRequest(BaseModel):
@@ -774,6 +781,32 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
 
+    # Genre-specific story themes and examples
+    genre_themes = {
+        "Fantasy": {
+            "themes": "medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles",
+            "examples": "protecting a village from goblins, finding a lost magical artifact, rescuing a kidnapped princess, investigating a cursed forest, helping a wizard recover stolen spellbook, exploring an ancient dragon's lair, stopping a dark curse, finding a legendary sword",
+            "items": "Medieval weapons and items: Sword, Shield, Bow, Mace, Dagger, Staff, Armor, Helmet, Potion, Scroll, Enchanted Ring, Magic Wand, Crossbow, Axe, Spear, Chainmail, Gauntlets, Boots"
+        },
+        "Sci-Fi": {
+            "themes": "space, technology, aliens, futuristic settings, space stations, planets, robots, cybernetics, space travel, advanced weapons, holograms, space colonies",
+            "examples": "investigating a space station anomaly, rescuing colonists from alien attack, finding a lost data core, repairing a damaged ship, exploring an alien planet, stopping a rogue AI, finding rare energy crystals, investigating strange signals",
+            "items": "Modern weapons like PUBG/Free Fire: Assault Rifle, Pistol, Grenade, Bomb, Sniper Rifle, SMG, Shotgun, Energy Rifle, Plasma Gun, Laser Pistol, Frag Grenade, Smoke Grenade, Body Armor, Helmet, Medkit, Energy Shield, Tech Scanner, Cybernetic Implant"
+        },
+        "Mystery": {
+            "themes": "detective work, clues, investigations, puzzles, secrets, crime scenes, suspects, evidence, hidden messages, mysterious disappearances, locked rooms, conspiracies",
+            "examples": "solving a missing person case, investigating a theft, finding hidden clues, uncovering a conspiracy, solving a murder mystery, tracking down a criminal, discovering a secret organization, decoding encrypted messages",
+            "items": "Investigation tools: Magnifying Glass, Lockpick, Evidence Kit, Flashlight, Camera, Notebook, Fingerprint Kit, DNA Scanner, Decoder, Secret Key, Clue Map, Disguise Kit, Wiretap Device, Hidden Camera, Truth Serum, Code Breaker"
+        },
+        "Mythical": {
+            "themes": "gods, legends, ancient powers, mythological creatures, divine quests, temples, prophecies, ancient rituals, legendary heroes, sacred artifacts, divine intervention",
+            "examples": "fulfilling an ancient prophecy, seeking favor from the gods, battling a mythological beast, finding a sacred artifact, restoring balance to the world, communing with ancient spirits, completing a divine quest, awakening ancient powers",
+            "items": "God-related weapons: Divine Sword, Sacred Shield, Godly Bow, Celestial Staff, Holy Mace, Angelic Dagger, Thunder Hammer, Lightning Spear, Sacred Armor, Divine Helmet, God's Blessing Potion, Sacred Scroll, Divine Ring, Celestial Boots, Holy Cross, Divine Artifact"
+        }
+    }
+    
+    genre_info = genre_themes.get(genre, genre_themes["Fantasy"])
+    
     prompt = f"""
     You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
 
@@ -784,11 +817,25 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
 
     This is the very beginning of the adventure. You MUST generate SHORT and SIMPLE content:
+    
+    GENRE: {genre}
+    Genre Themes: {genre_info["themes"]}
+    Genre Examples: {genre_info["examples"]}
+    
+    IMPORTANT: Generate a RANDOM and VARIED {genre} story scenario each time. Do NOT repeat the same story. Be creative and use DIFFERENT scenarios from the examples above. Vary the themes, situations, and challenges every time!
+    
+    CRITICAL FLOW: Quest FIRST → Story SECOND
+    
     1. A warm, personalized greeting (1-2 sentences) that welcomes {player.name} the {player.class_name}.
-    2. A starting quest that fits the {genre} theme. Keep it simple and clear (1-2 sentences).
-    3. Initial loot/items appropriate for a level {player.level} {player.class_name} (2-3 items).
-    4. An opening story scene (MAX 2-3 SHORT sentences, use simple English words). Set the stage, introduce the quest, and mention the items.
+    2. Generate a starting quest FIRST. Create a RANDOM, interesting {genre} quest that fits the genre themes. The quest should be varied and different each time. Examples of quest types: {genre_info["examples"]}. Make it unique!
+    3. Generate an opening story scene (MAX 2-3 SHORT sentences, use simple English words) that INTRODUCES and ALIGNS WITH the quest you just created. The story should set up the quest situation/problem. If the quest is about protecting a village, the story should introduce the village and the threat. If the quest is about investigating strange lights, the story should mention the strange lights. The story MUST match the quest exactly because it's created FROM the quest.
+    4. Initial loot/items appropriate for a level {player.level} {player.class_name} in a {genre} setting (6-8 items). 
+       CRITICAL: Items MUST match the {genre} theme. Use ONLY {genre}-appropriate items:
+       {genre_info["items"]}
+       Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, etc.
     5. EXACTLY 3 distinct and meaningful choices for the player (keep choice text short, 3-5 words each).
+    
+    The quest is created FIRST, then the story introduces that quest. They will be in perfect sync because the story is based on the quest.
 
     Format your response STRICTLY as JSON:
     {{
@@ -802,10 +849,14 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
         "rewards": {{"xp": 100, "gold": 50, "items": []}}
       }},
       "items": [
-        {{"id": "item_sword_1", "name": "Rusty Sword", "type": "weapon", "effect": "+2 Attack", "quantity": 1}},
-        {{"id": "item_potion_1", "name": "Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 2}}
-      ],
-      "story": "SHORT opening narrative (MAX 2-3 sentences, use simple English). Greet the player, introduce the quest, describe the scene briefly, and mention the starting items.",
+        {{"id": "item_1", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
+        {{"id": "item_2", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
+        {{"id": "item_3", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
+        {{"id": "item_4", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
+        {{"id": "item_5", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
+        {{"id": "item_6", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}}
+      ] // Generate 6-8 items that match the {genre} theme. Examples: {genre_info["items"]}. Use genre-appropriate names and types. Prioritize weapons and combat gear.
+      "story": "SHORT opening narrative (MAX 2-3 sentences, use simple English). Greet the player, introduce the quest situation (the story MUST match the quest title and description exactly), describe the scene briefly, and mention the starting items. The story should set up the quest that was just created.",
       "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"]
     }}
 
@@ -814,7 +865,11 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     -   Story must be MAX 2-3 sentences. NO long paragraphs.
     -   Use simple words: "go" not "proceed", "see" not "observe", "big" not "enormous".
     -   Start with a warm greeting (1-2 sentences) mentioning player's name and class.
-    -   Quest description should be 1-2 sentences, simple and clear.
+    -   IMPORTANT: Generate VARIED and RANDOM {genre} quest scenarios. Don't repeat the same quest every time. Use different themes from the genre examples above.
+    -   Quest is created FIRST, then story introduces that quest. The story MUST match the quest exactly.
+    -   Quest description should be 1-2 sentences, simple and clear, fitting the {genre} theme.
+    -   Story description should be 1-2 sentences that introduce the quest situation/problem.
+    -   CRITICAL: Items MUST be genre-appropriate. For {genre}, use: {genre_info["items"]}. Do NOT mix genres.
     -   Choices must be SHORT (3-5 words each): "Go left", "Fight monster", "Run away".
     -   Ensure the JSON format is perfect, with keys and values in double quotes.
     -   Do NOT include explanations outside the JSON structure.
@@ -916,9 +971,15 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     should_merge_stories = multiplayer.get("shouldMergeStories", False) if multiplayer else False
     both_survived_first_fight = multiplayer.get("bothSurvivedFirstFight", False) if multiplayer else False
 
+    # CRITICAL: Story should only generate when player makes a choice
+    # If turn_count is 0 and no choice is provided, this shouldn't be called
+    # (Initial story is generated by generate_initial_loot_and_quest)
+    if turn_count == 0 and not choice:
+        raise HTTPException(status_code=400, detail="Story generation requires a player choice. Use /api/initialize for initial story.")
+
     # Build context from previous events (take the last 5 for better context)
     context = "\n".join([e.text for e in previous_events[-5:]]) if previous_events else "The adventure begins."
-    player_choice_text = f"Player's Choice: {choice}" if choice else "This is the start of a new scene or the continuation after a combat."
+    player_choice_text = f"Player's Choice: {choice}" if choice else "This is the continuation after a combat."
 
     # Multiplayer merge logic
     if is_multiplayer and should_merge_stories and both_survived_first_fight:
@@ -927,9 +988,9 @@ async def generate_story_with_ai(player: Player, genre: str, previous_events: Li
     elif is_multiplayer and not should_merge_stories:
         # Separate stories for each player
         phase_instruction = "You are running a SEPARATE, INDEPENDENT story for this player. Do not reference the other player. This player's story is unique to them."
-    elif turn_count == 0:
-        # Initial story turn
-        phase_instruction = "This is the first story turn. Generate a SHORT opening scene (MAX 2-3 sentences, use simple English words)."
+    elif turn_count == 1:
+        # First story turn after initialization (player made their first choice)
+        phase_instruction = "This is the first story continuation after the opening scene. Continue the narrative based on the player's choice (MAX 2-3 sentences, use simple English words)."
     elif turn_count < 5 and story_phase == "exploration" and combat_escapes < 2:
         # Story phase - longer exploration before first combat (5 turns instead of 3)
         # Only show danger if player hasn't escaped twice already
@@ -1044,6 +1105,30 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
         else:
             multiplayer_context = f"\n\nMULTIPLAYER MODE - SEPARATE STORY:\nYou are running an INDEPENDENT story for {player.name} only. Do not reference any other players."
 
+    # Genre-specific themes and items for story continuation
+    genre_themes_cont = {
+        "Fantasy": {
+            "theme": "Use medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles. Keep the Fantasy theme consistent.",
+            "items": "Medieval weapons and items: Sword, Shield, Bow, Mace, Dagger, Staff, Armor, Helmet, Potion, Scroll, Enchanted Ring, Magic Wand, Crossbow, Axe, Spear, Chainmail, Gauntlets, Boots"
+        },
+        "Sci-Fi": {
+            "theme": "Use space, technology, aliens, futuristic settings, space stations, planets, robots, cybernetics, space travel, advanced weapons, holograms, space colonies. Keep the Sci-Fi theme consistent.",
+            "items": "Modern weapons like PUBG/Free Fire: Assault Rifle, Pistol, Grenade, Bomb, Sniper Rifle, SMG, Shotgun, Energy Rifle, Plasma Gun, Laser Pistol, Frag Grenade, Smoke Grenade, Body Armor, Helmet, Medkit, Energy Shield, Tech Scanner, Cybernetic Implant"
+        },
+        "Mystery": {
+            "theme": "Use detective work, clues, investigations, puzzles, secrets, crime scenes, suspects, evidence, hidden messages, mysterious disappearances, locked rooms, conspiracies. Keep the Mystery theme consistent.",
+            "items": "Investigation tools: Magnifying Glass, Lockpick, Evidence Kit, Flashlight, Camera, Notebook, Fingerprint Kit, DNA Scanner, Decoder, Secret Key, Clue Map, Disguise Kit, Wiretap Device, Hidden Camera, Truth Serum, Code Breaker"
+        },
+        "Mythical": {
+            "theme": "Use gods, legends, ancient powers, mythological creatures, divine quests, temples, prophecies, ancient rituals, legendary heroes, sacred artifacts, divine intervention. Keep the Mythical theme consistent.",
+            "items": "God-related weapons: Divine Sword, Sacred Shield, Godly Bow, Celestial Staff, Holy Mace, Angelic Dagger, Thunder Hammer, Lightning Spear, Sacred Armor, Divine Helmet, God's Blessing Potion, Sacred Scroll, Divine Ring, Celestial Boots, Holy Cross, Divine Artifact"
+        }
+    }
+    
+    genre_cont_info = genre_themes_cont.get(genre, genre_themes_cont["Fantasy"])
+    genre_theme_instruction = genre_cont_info["theme"]
+    genre_items_instruction = genre_cont_info["items"]
+    
     prompt = f"""
     You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
 
@@ -1064,8 +1149,14 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     - Is Final Phase: {is_final_phase}
     {multiplayer_context}
     
+    GENRE: {genre}
+    {genre_theme_instruction}
+    
     Active Quest:
     {f"Title: {active_quest.get('title', 'None')}\nDescription: {active_quest.get('description', 'None')}\nObjectives: {active_quest.get('objectives', [])}" if active_quest else "No active quest"}
+    
+    CRITICAL QUEST SYNCHRONIZATION RULE:
+    {f"YOU MUST STRICTLY SYNCHRONIZE THE STORY WITH THE ACTIVE QUEST ABOVE. The story narrative MUST directly align with the quest title '{active_quest.get('title', '')}' and description '{active_quest.get('description', '')}'. Every story segment MUST progress the quest objectives: {active_quest.get('objectives', [])}. DO NOT create unrelated storylines - the story MUST be about completing this specific quest. The narrative MUST match the quest exactly and continue progressing toward quest completion." if active_quest else "No active quest - generate a varied and interesting {genre} adventure story. Be creative and don't repeat the same scenarios!"}
     
     Current Location: {current_location or 'Unknown'} (Floor {player.dungeonLevel})
     {"Location Context: Generate location-specific content based on the current location. Each location has unique enemies, loot, and narrative themes. Reference the location in your story when appropriate." if current_location else ""}
@@ -1079,12 +1170,13 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
 
     Generate the next part of the story (KEEP IT SHORT AND SIMPLE):
     1.  Write a SHORT narrative continuation (MAX 2-3 sentences, use simple English words) based on the phase instruction above.
-    2.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away").
-    3.  If in the "danger" phase and player hasn't chosen attack yet, include choices like "Attack", "Run", "Hide" (keep them short).
-    4.  DO NOT include an enemy object unless the player explicitly chooses to attack AND combat hasn't started yet.
-    5.  If player chose to hide/run/escape from danger, continue the story focusing on quest progression - NO MORE COMBAT OR THREATS.
-    5.  Only include items if the player finds them in this specific moment.
-    6.  CRITICAL: If this is after combat (isAfterCombat is true), you MUST:
+    2.  CRITICAL: If there is an active quest, the story MUST directly relate to and progress that quest. The narrative MUST match the quest title and description exactly. Do NOT create unrelated storylines.
+    3.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away").
+    4.  CRITICAL: If a creature/enemy appears in the story, you MUST include "Attack" as one of the 3 choices. The other choices can be "Run", "Hide", "Investigate", etc.
+    5.  When including a dangerEncounter with an enemy, set shouldStartCombat to true. The enemy will be used for weapon selection combat (not turn-based combat panel).
+    6.  If player chose to hide/run/escape from danger, continue the story focusing on quest progression - NO MORE COMBAT OR THREATS.
+    7.  Only include items if the player finds them in this specific moment. CRITICAL: Items MUST match the {genre} theme. Use ONLY {genre}-appropriate items: {genre_items_instruction}. Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, Mystery items for Mystery, Mythical items for Mythical.
+    8.  CRITICAL: If this is after combat (isAfterCombat is true), you MUST:
        - Continue the story focusing on quest progression
        - STRICTLY FORBIDDEN: Do NOT create new enemies, combat, attacks, or threats
        - STRICTLY FORBIDDEN: Do NOT mention the dead creature
@@ -1107,7 +1199,7 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
         "options": ["Option 1", "Option 2", "Option 3", "Option 4", "Option 5"], // EXACTLY 5 options - ONE must be correct
         "hints": ["Hint 1", "Hint 2"] // Optional
       }} // Optional: Include ONLY if in final phase (NOT an enemy - it's a puzzle!). MUST have exactly 5 options with one correct answer.
-      "items": [{{ "id": "item_health_potion_1", "name": "Minor Health Potion", "type": "potion", "effect": "Restores 30 HP", "quantity": 1 }}] // Optional
+      "items": [{{ "id": "item_1", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1 }}] // Optional: Include ONLY if player finds items. Items MUST match {genre} theme. Examples: {genre_items_instruction}. Use genre-appropriate names and types.
       "events": [ {{ "type": "story", "text": "Event text" }} ] // Optional
       "storyPhase": "{story_phase}" // Current phase (should be "exploration" if player hid/ran from danger)
       "shouldStartCombat": false // Set to true ONLY if player chose attack in danger phase. MUST be false if player hid/ran/escaped (NOT for final phase - it's a puzzle!)
@@ -1116,6 +1208,8 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     }}
 
     Important Notes:
+    -   CRITICAL: If there is an active quest, the story narrative MUST match the quest title and description exactly. The story MUST be about progressing that specific quest, not unrelated content.
+    -   CRITICAL: Items MUST be genre-appropriate. For {genre}, use ONLY: {genre_items_instruction}. Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, Mystery items for Mystery, Mythical items for Mythical.
     -   Maintain narrative consistency.
     -   Keep the difficulty appropriate for a level {player.level} {player.class_name} on floor {player.dungeonLevel}.
     -   Higher floors should have stronger enemies and better rewards. Scale enemy stats by: baseStats * (1 + floorLevel * 0.3)
@@ -1188,6 +1282,12 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
                 # Higher floors have better loot chances
                 pass  # Items are already generated by AI, but we could enhance them here
             # Quest rewards will be scaled when quest is completed
+        
+        # CRITICAL: Only return quest if there's no active quest (prevent duplicates)
+        if active_quest and "quest" in result:
+            # Remove quest from result if player already has an active quest
+            result.pop("quest", None)
+            logger.debug(f"Removed quest from response - player already has active quest: {active_quest.get('title', 'Unknown')}")
         
         return result
     except Exception as e:
@@ -1655,10 +1755,15 @@ async def api_generate_story(request: StoryRequest):
             # Ensure story phase is exploration after hiding/running
             result["storyPhase"] = "exploration"
         
-        # Handle danger encounter - extract enemy if player chose to attack (ONLY if not after combat and not hiding/running)
-        if not is_after_combat and not player_hid_or_ran and result.get("dangerEncounter") and result.get("shouldStartCombat"):
-            result["enemy"] = result["dangerEncounter"].get("enemy")
-            result["dangerDescription"] = result["dangerEncounter"].get("description", "")
+        # Handle danger encounter - extract enemy when it appears (for weapon selection combat)
+        # Store enemy when dangerEncounter is present, so player can choose "Attack" and select weapon
+        if not is_after_combat and not player_hid_or_ran and result.get("dangerEncounter"):
+            if "enemy" in result["dangerEncounter"]:
+                result["enemy"] = result["dangerEncounter"].get("enemy")
+                result["dangerDescription"] = result["dangerEncounter"].get("description", "")
+                # Set shouldStartCombat to true if enemy is present (will trigger weapon selection on frontend)
+                if result.get("shouldStartCombat") is not False:
+                    result["shouldStartCombat"] = True
         
         # Final validation: Ensure choices don't contain objects (like items)
         if "choices" in result and isinstance(result.get("choices"), list):
@@ -1916,8 +2021,22 @@ async def save_game(save_data: SaveData):
         raise HTTPException(status_code=503, detail="Database connection not available.")
     try:
         # Convert Pydantic model to dict for MongoDB
-        save_dict = save_data.model_dump(by_alias=True)
+        save_dict = save_data.model_dump(by_alias=True, exclude_none=True)
         now = datetime.datetime.now(datetime.timezone.utc)
+        
+        # Create or update player record if we have player info
+        if save_dict.get("googleId") or save_dict.get("playerId"):
+            game_state = save_dict.get("gameState", {})
+            player_data = game_state.get("player", {})
+            
+            if player_data:
+                player_record = PlayerData(
+                    googleId=save_dict.get("googleId"),
+                    name=player_data.get("name") or save_dict["playerId"],
+                    email=None,  # Will be updated if available
+                    picture=None,
+                )
+                await _create_or_update_player_internal(player_record)
 
         # Use playerId and saveSlot to uniquely identify the save, upserting it
         result = await db.saves.update_one(
@@ -1941,6 +2060,13 @@ async def save_game(save_data: SaveData):
             },
             upsert=True
         )
+        
+        # Update googleId if provided
+        if save_dict.get("googleId"):
+            await db.saves.update_one(
+                {"playerId": save_dict["playerId"], "saveSlot": save_dict["saveSlot"]},
+                {"$set": {"googleId": save_dict["googleId"]}}
+            )
 
         if result.upserted_id:
             save_id = str(result.upserted_id)
@@ -2037,6 +2163,174 @@ async def load_by_name(name: str):
     except Exception as e:
         logger.error(f"Error loading by name '{name}': {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load by name: {str(e)}")
+
+@app.get("/api/check-save/{name}")
+async def check_save_exists(name: str):
+    """Check if saves exist for a player name and return preview."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        save = await db.saves.find_one({"playerId": name, "deletedAt": None}, sort=[("updatedAt", DESCENDING)])
+        if not save:
+            return {"exists": False}
+        
+        game_state = save.get("gameState", {})
+        player = game_state.get("player", {})
+        
+        return {
+            "exists": True,
+            "save": {
+                "id": str(save["_id"]),
+                "name": save.get("saveName", "AutoSave"),
+                "updatedAt": save.get("updatedAt").isoformat() if save.get("updatedAt") else None,
+                "preview": {
+                    "level": player.get("level", 1),
+                    "class": player.get("class", "Unknown"),
+                    "lastPlayed": save.get("updatedAt").isoformat() if save.get("updatedAt") else None,
+                }
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error checking save for '{name}': {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to check save: {str(e)}")
+
+async def _create_or_update_player_internal(player_data: PlayerData):
+    """Internal helper to create or update player record."""
+    if db is None:
+        return None
+    
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        player_dict = player_data.model_dump(exclude_none=True)
+        
+        # Determine query based on whether it's a Google user or guest
+        if player_dict.get("googleId"):
+            query = {"googleId": player_dict["googleId"]}
+        else:
+            query = {"name": player_dict["name"]}
+        
+        # Upsert player record
+        await db.players.update_one(
+            query,
+            {
+                "$setOnInsert": {
+                    "createdAt": now,
+                },
+                "$set": {
+                    **player_dict,
+                    "updatedAt": now,
+                    "lastLoginAt": now,
+                }
+            },
+            upsert=True
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"Error in internal player update: {e}")
+        return False
+
+@app.post("/api/players")
+async def create_or_update_player(player_data: PlayerData):
+    """Create or update a player record."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        now = datetime.datetime.now(datetime.timezone.utc)
+        player_dict = player_data.model_dump(exclude_none=True)
+        
+        # Determine query based on whether it's a Google user or guest
+        if player_dict.get("googleId"):
+            query = {"googleId": player_dict["googleId"]}
+        else:
+            query = {"name": player_dict["name"]}
+        
+        # Upsert player record
+        result = await db.players.update_one(
+            query,
+            {
+                "$setOnInsert": {
+                    "createdAt": now,
+                },
+                "$set": {
+                    **player_dict,
+                    "updatedAt": now,
+                    "lastLoginAt": now,
+                }
+            },
+            upsert=True
+        )
+        
+        # Get the created/updated player
+        player = await db.players.find_one(query)
+        if not player:
+            raise HTTPException(status_code=500, detail="Failed to create/update player")
+        
+        return {
+            "success": True,
+            "player": {
+                "id": str(player["_id"]),
+                "name": player["name"],
+                "googleId": player.get("googleId"),
+                "email": player.get("email"),
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error creating/updating player: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create/update player: {str(e)}")
+
+@app.get("/api/players/google/{google_id}")
+async def get_player_by_google_id(google_id: str):
+    """Get player record by Google ID."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        player = await db.players.find_one({"googleId": google_id})
+        if not player:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        return {
+            "id": str(player["_id"]),
+            "name": player["name"],
+            "googleId": player.get("googleId"),
+            "email": player.get("email"),
+            "picture": player.get("picture"),
+            "createdAt": player.get("createdAt").isoformat() if player.get("createdAt") else None,
+            "lastLoginAt": player.get("lastLoginAt").isoformat() if player.get("lastLoginAt") else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting player by Google ID: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get player: {str(e)}")
+
+@app.get("/api/players/name/{name}")
+async def get_player_by_name(name: str):
+    """Get player record by name."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        player = await db.players.find_one({"name": name})
+        if not player:
+            raise HTTPException(status_code=404, detail="Player not found")
+        
+        return {
+            "id": str(player["_id"]),
+            "name": player["name"],
+            "googleId": player.get("googleId"),
+            "email": player.get("email"),
+            "picture": player.get("picture"),
+            "createdAt": player.get("createdAt").isoformat() if player.get("createdAt") else None,
+            "lastLoginAt": player.get("lastLoginAt").isoformat() if player.get("lastLoginAt") else None,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting player by name: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get player: {str(e)}")
 
 
 @app.patch("/api/saves/{save_id}")

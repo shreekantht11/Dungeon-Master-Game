@@ -7,6 +7,14 @@ import Settings from '@/components/Settings';
 import ShopPage from '@/components/ShopPage';
 import CraftingPage from '@/components/CraftingPage';
 import CodexPage from '@/components/CodexPage';
+import MilestonesPage from '@/components/MilestonesPage';
+import EventsPage from '@/components/EventsPage';
+import CollectionsPage from '@/components/CollectionsPage';
+import ProgressionPage from '@/components/ProgressionPage';
+import StoryReplayPage from '@/components/StoryReplayPage';
+import LeaderboardsPage from '@/components/LeaderboardsPage';
+import UnlocksPage from '@/components/UnlocksPage';
+import ProfilePage from '@/components/ProfilePage';
 
 const Index = () => {
   const currentScreen = useGameStore((state) => state.currentScreen);
@@ -21,6 +29,14 @@ const Index = () => {
       {currentScreen === 'shop' && <ShopPage />}
       {currentScreen === 'crafting' && <CraftingPage />}
       {currentScreen === 'codex' && <CodexPage />}
+      {currentScreen === 'milestones' && <MilestonesPage />}
+      {currentScreen === 'events' && <EventsPage />}
+      {currentScreen === 'collections' && <CollectionsPage />}
+      {currentScreen === 'progression' && <ProgressionPage />}
+      {currentScreen === 'replay' && <StoryReplayPage />}
+      {currentScreen === 'leaderboards' && <LeaderboardsPage />}
+      {currentScreen === 'unlocks' && <UnlocksPage />}
+      {currentScreen === 'profile' && <ProfilePage />}
     </div>
   );
 };

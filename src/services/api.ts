@@ -372,6 +372,54 @@ export const api = {
     }
   },
 
+  // Check if save exists for a player name
+  async checkSaveExists(name: string): Promise<{ exists: boolean; save?: any }> {
+    try {
+      const response = await fetchWithRetry(
+        `${API_BASE_URL}/api/check-save/${encodeURIComponent(name)}`,
+        { method: 'GET' }
+      );
+      return await response.json();
+    } catch (error) {
+      console.error('Check save failed:', error);
+      return { exists: false };
+    }
+  },
+
+  // Create or update player record
+  async createOrUpdatePlayer(playerData: {
+    googleId?: string;
+    name: string;
+    email?: string;
+    picture?: string;
+  }): Promise<any> {
+    try {
+      const response = await fetchWithRetry(`${API_BASE_URL}/api/players`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(playerData),
+      });
+      return await response.json();
+    } catch (error) {
+      console.error('Create/update player failed:', error);
+      throw error;
+    }
+  },
+
+  // Get player by Google ID
+  async getPlayerByGoogleId(googleId: string): Promise<any> {
+    try {
+      const response = await fetchWithRetry(
+        `${API_BASE_URL}/api/players/google/${encodeURIComponent(googleId)}`,
+        { method: 'GET' }
+      );
+      return await response.json();
+    } catch (error) {
+      console.error('Get player by Google ID failed:', error);
+      throw error;
+    }
+  },
+
   // Rename a save by id
   async renameSave(saveId: string, saveName: string): Promise<{ success: boolean }> {
     try {

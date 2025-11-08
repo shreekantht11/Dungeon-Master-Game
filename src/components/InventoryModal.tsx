@@ -6,6 +6,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Badge } from '@/components/ui/badge';
 import { X, Package, Sword, Shield, Droplet, Key } from 'lucide-react';
 import { toast } from 'sonner';
+import { getWeaponSymbol } from '@/utils/weaponSymbols';
 
 interface InventoryModalProps {
   isOpen: boolean;
@@ -100,7 +101,7 @@ const InventoryModal = ({ isOpen, onClose }: InventoryModalProps) => {
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {inventory.map((item, index) => {
-                      const Icon = itemIcons[item.type];
+                      const Icon = itemIcons[item.type] || Package;
                       return (
                         <motion.div
                           key={item.id}
@@ -115,7 +116,10 @@ const InventoryModal = ({ isOpen, onClose }: InventoryModalProps) => {
                                   <Icon className="w-6 h-6 text-primary" />
                                 </div>
                                 <div>
-                                  <h3 className="font-semibold text-lg">
+                                  <h3 className="font-semibold text-lg flex items-center gap-2">
+                                    {getWeaponSymbol(item.name, item.type) && (
+                                      <span className="text-2xl">{getWeaponSymbol(item.name, item.type)}</span>
+                                    )}
                                     {item.name}
                                   </h3>
                                   <Badge

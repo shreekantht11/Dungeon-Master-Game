@@ -133,33 +133,44 @@ const CombatPanel = () => {
       // Auto-save after resuming story from combat
       try {
         const latest = useGameStore.getState();
-        await api.saveGame({
-          playerId: latest.player?.name,
+        const { getPlayerId, getGoogleId } = await import('@/utils/playerId');
+        const { serializeGameState } = await import('@/utils/saveState');
+        
+        const playerId = getPlayerId();
+        if (!playerId) {
+          console.warn('Cannot save: no player ID available');
+          return;
+        }
+        
+        const serializedState = serializeGameState(latest);
+        
+        // Verify critical data is included
+        if (!serializedState.player) {
+          console.error('Save failed: player data missing');
+          return;
+        }
+        
+        const saveResult = await api.saveGame({
+          playerId: playerId,
+          googleId: getGoogleId() || undefined,
           saveSlot: 1,
           saveName: 'AutoSave',
-          gameState: {
-            player: latest.player,
-            genre: latest.genre,
-            story: latest.currentStory,
-            choices: latest.playerChoices,
-            storyPhase: latest.gameState.storyPhase,
-            turnCount: latest.gameState.turnCount,
-            combatEncounters: latest.gameState.combatEncounters,
-            combatEscapes: latest.gameState.combatEscapes,
-            isAfterCombat: latest.gameState.isAfterCombat,
-            isFinalPhase: latest.gameState.isFinalPhase,
-            puzzle: latest.currentPuzzle,
-            storyLog: latest.storyLog,
-            badges: latest.badges,
-            cameos: latest.cameos,
-          },
+          gameState: serializedState,
           storyLog: latest.storyLog,
           badges: latest.badges,
           cameos: latest.cameos,
           schemaVersion: 1,
         });
+        
+        if (saveResult?.success) {
+          console.log('Game saved after combat:', {
+            playerId,
+            coins: serializedState.player?.coins,
+            inventoryCount: serializedState.player?.inventory?.length || 0,
+          });
+        }
       } catch (e) {
-        console.warn('Autosave failed after combat', e);
+        console.error('Autosave failed after combat', e);
       }
     } catch (error) {
       console.error('Failed to continue story after combat:', error);

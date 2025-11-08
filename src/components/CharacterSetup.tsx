@@ -70,8 +70,21 @@ const CharacterSetup = () => {
   useEffect(() => {
     if (authUser?.name && !name) {
       setName(authUser.name);
+    } else if (!authUser?.name && !name) {
+      // Fallback: check localStorage if authUser is not yet loaded
+      try {
+        const storedAuth = localStorage.getItem('gilded-scrolls-auth');
+        if (storedAuth) {
+          const parsed = JSON.parse(storedAuth);
+          if (parsed?.name) {
+            setName(parsed.name);
+          }
+        }
+      } catch (e) {
+        // Silently fail if localStorage read fails
+      }
     }
-  }, [authUser?.name]);
+  }, [authUser?.name, name]);
 
   const generateRandomName = () => {
     const randomName = fantasyNames[Math.floor(Math.random() * fantasyNames.length)];
@@ -223,11 +236,11 @@ const CharacterSetup = () => {
                         return (
                           <Tooltip key={cls.name} delayDuration={200}>
                             <TooltipTrigger asChild>
-                              <button
+                              <div
                                 onClick={() => setSelectedClass(cls.name as any)}
                                 onMouseEnter={() => setHoveredClass(cls.name)}
                                 onMouseLeave={() => setHoveredClass(null)}
-                                className={`p-3 rounded-lg border-2 transition-all duration-300 text-center relative ${
+                                className={`p-3 rounded-lg border-2 transition-all duration-300 text-center relative cursor-pointer ${
                                   isSelected
                                     ? `${cls.borderColor} ${cls.bgColor} shadow-md`
                                     : 'border-border hover:border-primary/50'
@@ -288,7 +301,7 @@ const CharacterSetup = () => {
                                     </div>
                                   </PopoverContent>
                                 </Popover>
-                              </button>
+                              </div>
                             </TooltipTrigger>
                             <TooltipContent side="top" className="w-56">
                               <div className="space-y-1.5">
