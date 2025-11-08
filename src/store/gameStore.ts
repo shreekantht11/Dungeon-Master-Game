@@ -9,12 +9,21 @@ export interface Player {
   maxHealth: number;
   xp: number;
   maxXp: number;
+  dungeonLevel: number;
   position: { x: number; y: number };
   inventory: Item[];
+  abilities: Record<string, Ability>;
   stats: {
     strength: number;
     intelligence: number;
     agility: number;
+  };
+  appearance?: {
+    hairColor?: string;
+    skinColor?: string;
+    outfitColor?: string;
+    hairStyle?: string;
+    accessories?: string[];
   };
 }
 
@@ -116,6 +125,65 @@ export interface AuthUser {
   token?: string;
 }
 
+export interface StoryEnding {
+  id: string;
+  title: string;
+  description: string;
+  genre: string;
+  unlockedAt?: string;
+  choicePath: string[];
+  icon: string;
+  rarity: 'common' | 'rare' | 'epic' | 'legendary';
+}
+
+export interface ChoiceHistory {
+  turn: number;
+  choice: string;
+  consequence: string;
+  isMajor: boolean;
+  timestamp: string;
+}
+
+export interface DailyChallenge {
+  id: string;
+  date: string;
+  title: string;
+  description: string;
+  objectives: Array<{ text: string; completed: boolean }>;
+  rewards: {
+    xp: number;
+    gold?: number;
+    items?: string[];
+    badge?: string;
+  };
+  completed: boolean;
+  expiresAt: string;
+}
+
+export interface Friend {
+  playerId: string;
+  name: string;
+  status: 'pending' | 'accepted' | 'blocked';
+  requestedBy: string;
+  addedAt: string;
+  lastSeen?: string;
+  stats?: {
+    level: number;
+    totalXp: number;
+    badgesCount: number;
+  };
+}
+
+export interface LeaderboardEntry {
+  rank: number;
+  playerId: string;
+  name: string;
+  score: number;
+  level: number;
+  badgesCount: number;
+  isFriend?: boolean;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -132,6 +200,27 @@ export interface Enemy {
   attack: number;
   defense: number;
   position: { x: number; y: number };
+}
+
+export interface Ability {
+  id: string;
+  name: string;
+  description: string;
+  level: number;
+  maxLevel: number;
+  unlockedAt: number; // player level required
+  cooldown?: number;
+  manaCost?: number;
+  effect: string;
+  class: 'Warrior' | 'Mage' | 'Rogue';
+}
+
+export interface LocationStats {
+  timesVisited: number;
+  enemiesDefeated: number;
+  itemsFound: number;
+  highestLevel: number;
+  completed: boolean;
 }
 
 export interface StoryEvent {
@@ -203,9 +292,33 @@ interface GameState {
   };
   updateGameState: (updates: Partial<GameState['gameState']>) => void;
   
+  // Story Branching & Endings
+  choiceHistory: ChoiceHistory[];
+  addChoiceToHistory: (choice: ChoiceHistory) => void;
+  unlockedEndings: StoryEnding[];
+  setUnlockedEndings: (endings: StoryEnding[]) => void;
+  unlockEnding: (ending: StoryEnding) => void;
+  
+  // Daily Challenges
+  dailyChallenge: DailyChallenge | null;
+  setDailyChallenge: (challenge: DailyChallenge | null) => void;
+  challengeStreak: number;
+  setChallengeStreak: (streak: number) => void;
+  
+  // Social Features
+  friends: Friend[];
+  setFriends: (friends: Friend[]) => void;
+  addFriend: (friend: Friend) => void;
+  removeFriend: (playerId: string) => void;
+  leaderboard: LeaderboardEntry[];
+  setLeaderboard: (entries: LeaderboardEntry[]) => void;
+  
   // World
   currentLocation: string;
   discoveredLocations: string[];
+  currentDungeonLevel: number;
+  locationProgress: Record<string, number>; // Track highest level reached per location
+  locationStats: Record<string, LocationStats>; // Track location statistics
   
   // Settings
   language: 'English' | 'Kannada' | 'Telugu';
@@ -227,7 +340,14 @@ interface GameState {
   damagePlayer: (damage: number) => void;
   addItem: (item: Item) => void;
   useItem: (itemId: string) => void;
+  unlockAbility: (abilityId: string) => void;
+  upgradeAbility: (abilityId: string) => void;
+  useAbility: (abilityId: string) => void;
   updateSettings: (settings: Partial<Pick<GameState, 'language' | 'textSpeed' | 'soundEnabled' | 'musicEnabled'>>) => void;
+  setDungeonLevel: (level: number) => void;
+  incrementDungeonLevel: () => void;
+  setLocationProgress: (locationId: string, level: number) => void;
+  updateLocationStats: (locationId: string, updates: Partial<LocationStats>) => void;
   resetGame: () => void;
 }
 
@@ -263,8 +383,17 @@ const initialState = {
     isFinalPhase: false,
     isInitialized: false,
   },
+  choiceHistory: [] as ChoiceHistory[],
+  unlockedEndings: [] as StoryEnding[],
+  dailyChallenge: null as DailyChallenge | null,
+  challengeStreak: 0,
+  friends: [] as Friend[],
+  leaderboard: [] as LeaderboardEntry[],
   currentLocation: 'village',
   discoveredLocations: ['village'],
+  currentDungeonLevel: 1,
+  locationProgress: {} as Record<string, number>,
+  locationStats: {} as Record<string, LocationStats>,
   language: 'English' as const,
   textSpeed: 50,
   soundEnabled: true,
@@ -293,8 +422,10 @@ export const useGameStore = create<GameState>((set) => ({
         maxHealth: 100,
         xp: 0,
         maxXp: 100,
+        dungeonLevel: 1,
         position: { x: 100, y: 300 },
         inventory: [],
+        abilities: {},
         stats: classStats[character.class],
       },
     });
@@ -532,7 +663,91 @@ export const useGameStore = create<GameState>((set) => ({
       };
     }),
   
+  unlockAbility: (abilityId) =>
+    set((state) => {
+      if (!state.player) return state;
+      // Ability unlocking is handled by ability definitions utility
+      // This is a placeholder - actual logic will be in abilities.ts
+      return state;
+    }),
+  
+  upgradeAbility: (abilityId) =>
+    set((state) => {
+      if (!state.player) return state;
+      const ability = state.player.abilities[abilityId];
+      if (!ability || ability.level >= ability.maxLevel) return state;
+      
+      return {
+        player: {
+          ...state.player,
+          abilities: {
+            ...state.player.abilities,
+            [abilityId]: {
+              ...ability,
+              level: ability.level + 1,
+            },
+          },
+        },
+      };
+    }),
+  
+  useAbility: (abilityId) =>
+    set((state) => {
+      if (!state.player) return state;
+      const ability = state.player.abilities[abilityId];
+      if (!ability) return state;
+      // Ability usage effects are handled in combat
+      return state;
+    }),
+  
   updateSettings: (settings) => set(settings),
+  
+  setDungeonLevel: (level) =>
+    set((state) => {
+      if (!state.player) return state;
+      return {
+        player: { ...state.player, dungeonLevel: level },
+        currentDungeonLevel: level,
+      };
+    }),
+  
+  incrementDungeonLevel: () =>
+    set((state) => {
+      if (!state.player) return state;
+      const newLevel = state.player.dungeonLevel + 1;
+      return {
+        player: { ...state.player, dungeonLevel: newLevel },
+        currentDungeonLevel: newLevel,
+      };
+    }),
+  
+  setLocationProgress: (locationId, level) =>
+    set((state) => {
+      const currentProgress = state.locationProgress[locationId] || 0;
+      if (level > currentProgress) {
+        return {
+          locationProgress: { ...state.locationProgress, [locationId]: level },
+        };
+      }
+      return state;
+    }),
+  
+  updateLocationStats: (locationId, updates) =>
+    set((state) => {
+      const currentStats = state.locationStats[locationId] || {
+        timesVisited: 0,
+        enemiesDefeated: 0,
+        itemsFound: 0,
+        highestLevel: 0,
+        completed: false,
+      };
+      return {
+        locationStats: {
+          ...state.locationStats,
+          [locationId]: { ...currentStats, ...updates },
+        },
+      };
+    }),
   
   updateGameState: (updates) =>
     set((state) => ({
@@ -554,6 +769,50 @@ export const useGameStore = create<GameState>((set) => ({
       };
     }),
   
+  // Story Branching & Endings Actions
+  addChoiceToHistory: (choice) =>
+    set((state) => ({
+      choiceHistory: [...state.choiceHistory, choice],
+    })),
+  
+  setUnlockedEndings: (endings) =>
+    set({ unlockedEndings: endings }),
+  
+  unlockEnding: (ending) =>
+    set((state) => {
+      const exists = state.unlockedEndings.some((e) => e.id === ending.id);
+      if (exists) return state;
+      return {
+        unlockedEndings: [...state.unlockedEndings, { ...ending, unlockedAt: new Date().toISOString() }],
+      };
+    }),
+  
+  // Daily Challenge Actions
+  setDailyChallenge: (challenge) =>
+    set({ dailyChallenge: challenge }),
+  
+  setChallengeStreak: (streak) =>
+    set({ challengeStreak: streak }),
+  
+  // Social Features Actions
+  setFriends: (friends) =>
+    set({ friends }),
+  
+  addFriend: (friend) =>
+    set((state) => {
+      const exists = state.friends.some((f) => f.playerId === friend.playerId);
+      if (exists) return state;
+      return { friends: [...state.friends, friend] };
+    }),
+  
+  removeFriend: (playerId) =>
+    set((state) => ({
+      friends: state.friends.filter((f) => f.playerId !== playerId),
+    })),
+  
+  setLeaderboard: (entries) =>
+    set({ leaderboard: entries }),
+  
   resetGame: () =>
     set(() => ({
       ...initialState,
@@ -564,5 +823,14 @@ export const useGameStore = create<GameState>((set) => ({
       activeQuests: [],
       completedQuests: [],
       currentPuzzle: null,
+      choiceHistory: [],
+      unlockedEndings: [],
+      dailyChallenge: null,
+      challengeStreak: 0,
+      friends: [],
+      leaderboard: [],
+      currentDungeonLevel: 1,
+      locationProgress: {} as Record<string, number>,
+      locationStats: {} as Record<string, LocationStats>,
     })),
 }));

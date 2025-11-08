@@ -4,17 +4,74 @@ import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sword, Shield, Zap, Heart, Star, TrendingUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Sword, Shield, Zap, Heart, Star, TrendingUp, Lock, ArrowUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { getAbilitiesForClass, canUnlockAbility, initializeAbilitiesForClass } from '@/utils/abilities';
+import { toast } from 'sonner';
 
 const CharacterSheet = () => {
   const { t } = useTranslation();
-  const player = useGameStore(state => state.player);
+  const player = useGameStore((state) => state.player);
+  const unlockAbility = useGameStore((state) => state.unlockAbility);
+  const upgradeAbility = useGameStore((state) => state.upgradeAbility);
+  const updatePlayer = useGameStore((state) => state.updatePlayer);
 
   if (!player) return null;
 
   const healthPercent = (player.health / player.maxHealth) * 100;
   const xpPercent = (player.xp / player.maxXp) * 100;
+
+  // Initialize abilities if not already done
+  if (Object.keys(player.abilities || {}).length === 0) {
+    const initialAbilities = initializeAbilitiesForClass(player.class, player.level);
+    updatePlayer({ abilities: initialAbilities });
+  }
+
+  const handleUnlockAbility = (abilityId: string) => {
+    if (!canUnlockAbility(abilityId, player.level)) {
+      toast.error('You need to reach a higher level to unlock this ability');
+      return;
+    }
+    
+    const classAbilities = getAbilitiesForClass(player.class);
+    const abilityDef = classAbilities.find(a => a.id === abilityId);
+    if (!abilityDef) return;
+    
+    const newAbilities = {
+      ...player.abilities,
+      [abilityId]: {
+        ...abilityDef,
+        level: 1,
+      },
+    };
+    
+    updatePlayer({ abilities: newAbilities });
+    unlockAbility(abilityId);
+    toast.success(`Unlocked: ${abilityDef.name}!`);
+  };
+
+  const handleUpgradeAbility = (abilityId: string) => {
+    const ability = player.abilities[abilityId];
+    if (!ability) return;
+    
+    if (ability.level >= ability.maxLevel) {
+      toast.error('This ability is already at maximum level');
+      return;
+    }
+    
+    const upgradeCost = ability.level * 100; // XP cost increases per level
+    if (player.xp < upgradeCost) {
+      toast.error(`Not enough XP! Need ${upgradeCost} XP to upgrade.`);
+      return;
+    }
+    
+    upgradeAbility(abilityId);
+    updatePlayer({ xp: player.xp - upgradeCost });
+    toast.success(`${ability.name} upgraded to level ${ability.level + 1}!`);
+  };
+
+  const classAbilities = getAbilitiesForClass(player.class);
 
   return (
     <ScrollArea className="h-[600px] pr-4">
@@ -131,24 +188,32 @@ const CharacterSheet = () => {
         <div>
           <h3 className="font-semibold mb-3">Class Abilities</h3>
           <div className="space-y-2">
-            {player.class === 'Warrior' && (
-              <>
-                <AbilityCard name="Power Strike" description="Deal 150% damage" level={1} />
-                <AbilityCard name="Shield Bash" description="Stun enemy for 1 turn" level={1} locked />
-              </>
-            )}
-            {player.class === 'Mage' && (
-              <>
-                <AbilityCard name="Fireball" description="Area damage to all enemies" level={1} />
-                <AbilityCard name="Arcane Shield" description="Absorb incoming damage" level={1} locked />
-              </>
-            )}
-            {player.class === 'Rogue' && (
-              <>
-                <AbilityCard name="Backstab" description="Critical strike from behind" level={1} />
-                <AbilityCard name="Shadow Step" description="Dodge next attack" level={1} locked />
-              </>
-            )}
+            {classAbilities.map((abilityDef) => {
+              const ability = player.abilities[abilityDef.id];
+              const isUnlocked = !!ability;
+              const canUnlock = canUnlockAbility(abilityDef.id, player.level);
+              const isLocked = !isUnlocked && !canUnlock;
+              
+              return (
+                <AbilityCard
+                  key={abilityDef.id}
+                  name={abilityDef.name}
+                  description={abilityDef.description}
+                  level={ability?.level || 0}
+                  maxLevel={abilityDef.maxLevel}
+                  unlockedAt={abilityDef.unlockedAt}
+                  cooldown={abilityDef.cooldown}
+                  manaCost={abilityDef.manaCost}
+                  effect={abilityDef.effect}
+                  locked={isLocked}
+                  canUnlock={!isUnlocked && canUnlock}
+                  onUnlock={() => handleUnlockAbility(abilityDef.id)}
+                  onUpgrade={() => handleUpgradeAbility(abilityDef.id)}
+                  upgradeCost={ability ? ability.level * 100 : 0}
+                  playerXp={player.xp}
+                />
+              );
+            })}
           </div>
         </div>
       </div>
@@ -156,20 +221,101 @@ const CharacterSheet = () => {
   );
 };
 
-const AbilityCard = ({ name, description, level, locked }: any) => (
-  <div className={`bg-card border border-border rounded-lg p-3 ${locked ? 'opacity-50' : ''}`}>
-    <div className="flex justify-between items-start">
-      <div>
-        <p className="font-medium text-sm">{name}</p>
-        <p className="text-xs text-muted-foreground">{description}</p>
+interface AbilityCardProps {
+  name: string;
+  description: string;
+  level: number;
+  maxLevel: number;
+  unlockedAt: number;
+  cooldown?: number;
+  manaCost?: number;
+  effect: string;
+  locked: boolean;
+  canUnlock: boolean;
+  onUnlock: () => void;
+  onUpgrade: () => void;
+  upgradeCost: number;
+  playerXp: number;
+}
+
+const AbilityCard = ({
+  name,
+  description,
+  level,
+  maxLevel,
+  unlockedAt,
+  cooldown,
+  manaCost,
+  effect,
+  locked,
+  canUnlock,
+  onUnlock,
+  onUpgrade,
+  upgradeCost,
+  playerXp,
+}: AbilityCardProps) => {
+  const isMaxLevel = level >= maxLevel;
+  const canAffordUpgrade = playerXp >= upgradeCost;
+
+  return (
+    <div className={`bg-card border border-border rounded-lg p-3 ${locked ? 'opacity-50' : ''}`}>
+      <div className="flex justify-between items-start gap-2">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-1">
+            <p className="font-medium text-sm">{name}</p>
+            {level > 0 && (
+              <Badge variant="secondary" className="text-xs">
+                Lv {level}/{maxLevel}
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mb-1">{description}</p>
+          <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+            {cooldown && <span>Cooldown: {cooldown} turns</span>}
+            {manaCost && <span>Mana: {manaCost}</span>}
+            {effect && <span className="text-primary">Effect: {effect}</span>}
+          </div>
+          {locked && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Unlocks at level {unlockedAt}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col gap-1">
+          {locked ? (
+            <Badge variant="outline" className="text-xs flex items-center gap-1">
+              <Lock className="w-3 h-3" />
+              Locked
+            </Badge>
+          ) : canUnlock ? (
+            <Button size="sm" variant="outline" onClick={onUnlock} className="text-xs">
+              Unlock
+            </Button>
+          ) : (
+            <>
+              {!isMaxLevel && (
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={onUpgrade}
+                  disabled={!canAffordUpgrade}
+                  className="text-xs"
+                >
+                  <ArrowUp className="w-3 h-3 mr-1" />
+                  Upgrade ({upgradeCost} XP)
+                </Button>
+              )}
+              {isMaxLevel && (
+                <Badge variant="default" className="text-xs">
+                  Max Level
+                </Badge>
+              )}
+            </>
+          )}
+        </div>
       </div>
-      {locked ? (
-        <Badge variant="outline" className="text-xs">🔒 Locked</Badge>
-      ) : (
-        <Badge className="text-xs">Lv {level}</Badge>
-      )}
     </div>
-  </div>
-);
+  );
+};
 
 export default CharacterSheet;

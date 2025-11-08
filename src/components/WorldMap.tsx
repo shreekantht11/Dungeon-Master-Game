@@ -1,10 +1,14 @@
+import { useState } from 'react';
 import { motion } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { MapPin, Lock, CheckCircle } from 'lucide-react';
+import { Progress } from '@/components/ui/progress';
+import { MapPin, Lock, CheckCircle, Layers, AlertTriangle, Info, Trophy } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { useTranslation } from 'react-i18next';
+import DungeonLevelSelector from '@/components/DungeonLevelSelector';
+import LocationInfo from '@/components/LocationInfo';
 
 interface Location {
   id: string;
@@ -13,6 +17,8 @@ interface Location {
   discovered: boolean;
   unlocked: boolean;
   level: number;
+  maxLevel: number;
+  recommendedLevel: number;
   icon: string;
   x: number;
   y: number;
@@ -21,8 +27,16 @@ interface Location {
 const WorldMap = () => {
   const { t } = useTranslation();
   const { toast } = useToast();
-  const player = useGameStore(state => state.player);
-  const currentLocation = useGameStore(state => state.currentLocation || 'village');
+  const player = useGameStore((state) => state.player);
+  const currentLocation = useGameStore((state) => state.currentLocation || 'village');
+  const locationProgress = useGameStore((state) => state.locationProgress);
+  const locationStats = useGameStore((state) => state.locationStats);
+  const setDungeonLevel = useGameStore((state) => state.setDungeonLevel);
+  const setLocationProgress = useGameStore((state) => state.setLocationProgress);
+  const updateLocationStats = useGameStore((state) => state.updateLocationStats);
+  const [showLevelSelector, setShowLevelSelector] = useState(false);
+  const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
+  const [showLocationInfo, setShowLocationInfo] = useState<string | null>(null);
 
   const locations: Location[] = [
     {
@@ -32,6 +46,8 @@ const WorldMap = () => {
       discovered: true,
       unlocked: true,
       level: 1,
+      maxLevel: 3,
+      recommendedLevel: 1,
       icon: '🏘️',
       x: 20,
       y: 50,
@@ -43,6 +59,8 @@ const WorldMap = () => {
       discovered: true,
       unlocked: true,
       level: 3,
+      maxLevel: 5,
+      recommendedLevel: 3,
       icon: '🌲',
       x: 40,
       y: 40,
@@ -54,6 +72,8 @@ const WorldMap = () => {
       discovered: true,
       unlocked: player ? player.level >= 5 : false,
       level: 5,
+      maxLevel: 7,
+      recommendedLevel: 5,
       icon: '⛰️',
       x: 60,
       y: 30,
@@ -65,6 +85,8 @@ const WorldMap = () => {
       discovered: player ? player.level >= 7 : false,
       unlocked: player ? player.level >= 7 : false,
       level: 7,
+      maxLevel: 10,
+      recommendedLevel: 7,
       icon: '🏰',
       x: 75,
       y: 45,
@@ -76,6 +98,8 @@ const WorldMap = () => {
       discovered: player ? player.level >= 10 : false,
       unlocked: player ? player.level >= 10 : false,
       level: 10,
+      maxLevel: 15,
+      recommendedLevel: 10,
       icon: '🗻',
       x: 85,
       y: 20,
@@ -92,12 +116,48 @@ const WorldMap = () => {
       return;
     }
 
+    // Show level selector for locations with multiple floors
+    if (location.maxLevel > 1) {
+      setSelectedLocation(location);
+      setShowLevelSelector(true);
+    } else {
+      // Single level location, just travel
+      setDungeonLevel(1);
+      toast({
+        title: 'Traveling...',
+        description: `Heading to ${location.name}`,
+      });
+    }
+  };
+
+  const handleLevelSelect = (level: number) => {
+    if (!selectedLocation || !player) return;
+    
+    setDungeonLevel(level);
+    setLocationProgress(selectedLocation.id, level);
+    updateLocationStats(selectedLocation.id, {
+      timesVisited: (locationStats[selectedLocation.id]?.timesVisited || 0) + 1,
+      highestLevel: Math.max(locationStats[selectedLocation.id]?.highestLevel || 0, level),
+    });
+    
     toast({
       title: 'Traveling...',
-      description: `Heading to ${location.name}`,
+      description: `Entering ${selectedLocation.name} - Floor ${level}`,
     });
+  };
 
-    // In a real implementation, this would trigger a story event
+  const getDifficulty = (location: Location): 'easy' | 'medium' | 'hard' => {
+    if (!player) return 'medium';
+    const levelDiff = location.recommendedLevel - player.level;
+    if (levelDiff <= -2) return 'easy';
+    if (levelDiff <= 1) return 'medium';
+    return 'hard';
+  };
+
+  const getCompletionPercentage = (location: Location): number => {
+    const stats = locationStats[location.id];
+    if (!stats || location.maxLevel === 0) return 0;
+    return Math.min(100, (stats.highestLevel / location.maxLevel) * 100);
   };
 
   return (
@@ -190,22 +250,98 @@ const WorldMap = () => {
               )}
             </div>
 
-            <div className="flex items-center justify-between">
-              <Badge variant={location.unlocked ? 'default' : 'secondary'}>
-                Level {location.level}
-              </Badge>
-
-              <Button
-                size="sm"
-                disabled={!location.unlocked || currentLocation === location.id}
-                onClick={() => handleTravel(location)}
-              >
-                {currentLocation === location.id ? 'Current' : location.unlocked ? 'Travel' : 'Locked'}
-              </Button>
+            {/* Difficulty and Completion */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Badge variant={location.unlocked ? 'default' : 'secondary'}>
+                    Level {location.level}
+                  </Badge>
+                  {location.maxLevel > 1 && (
+                    <Badge variant="outline" className="flex items-center gap-1">
+                      <Layers className="w-3 h-3" />
+                      {locationProgress[location.id] || 0}/{location.maxLevel} Floors
+                    </Badge>
+                  )}
+                  {location.unlocked && player && (
+                    <Badge
+                      variant={
+                        getDifficulty(location) === 'easy'
+                          ? 'default'
+                          : getDifficulty(location) === 'medium'
+                          ? 'secondary'
+                          : 'destructive'
+                      }
+                      className="flex items-center gap-1"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      {getDifficulty(location).toUpperCase()}
+                    </Badge>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => setShowLocationInfo(location.id)}
+                  >
+                    <Info className="w-4 h-4" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    disabled={!location.unlocked || currentLocation === location.id}
+                    onClick={() => handleTravel(location)}
+                  >
+                    {currentLocation === location.id ? 'Current' : location.unlocked ? 'Travel' : 'Locked'}
+                  </Button>
+                </div>
+              </div>
+              
+              {/* Completion Progress */}
+              {location.unlocked && location.maxLevel > 1 && (
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-muted-foreground">Progress</span>
+                    <span className="text-muted-foreground">
+                      {Math.round(getCompletionPercentage(location))}%
+                    </span>
+                  </div>
+                  <Progress value={getCompletionPercentage(location)} className="h-2" />
+                </div>
+              )}
             </div>
           </motion.div>
         ))}
       </div>
+
+      {/* Dungeon Level Selector */}
+      {selectedLocation && (
+        <DungeonLevelSelector
+          locationId={selectedLocation.id}
+          locationName={selectedLocation.name}
+          maxLevel={selectedLocation.maxLevel}
+          recommendedLevel={selectedLocation.recommendedLevel}
+          highestLevelReached={locationProgress[selectedLocation.id] || 0}
+          open={showLevelSelector}
+          onClose={() => {
+            setShowLevelSelector(false);
+            setSelectedLocation(null);
+          }}
+          onSelect={handleLevelSelect}
+        />
+      )}
+
+      {/* Location Info */}
+      {showLocationInfo && (
+        <LocationInfo
+          locationId={showLocationInfo}
+          locationName={locations.find(l => l.id === showLocationInfo)?.name || 'Unknown'}
+          maxLevel={locations.find(l => l.id === showLocationInfo)?.maxLevel || 1}
+          recommendedLevel={locations.find(l => l.id === showLocationInfo)?.recommendedLevel || 1}
+          open={!!showLocationInfo}
+          onClose={() => setShowLocationInfo(null)}
+        />
+      )}
     </div>
   );
 };

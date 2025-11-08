@@ -211,6 +211,7 @@ class Player(BaseModel):
     maxHealth: int
     xp: int
     maxXp: int
+    dungeonLevel: int = 1
     # position: Dict[str, int] # Assuming frontend handles position
     inventory: List[Item]
     stats: PlayerStats
@@ -248,12 +249,15 @@ class StoryRequest(BaseModel):
     multiplayer: Optional[Dict[str, Any]] = None  # For multiplayer: other player info, merge flag, etc.
     activeQuest: Optional[Dict[str, Any]] = None  # Active quest for story context
     badgeEvents: Optional[List[str]] = None  # Milestone events triggered on the client
+    choiceHistory: Optional[List[Dict[str, Any]]] = None  # Track major choices for endings
+    currentLocation: Optional[str] = None  # Current location ID
 
 class CombatRequest(BaseModel):
     player: Player
     enemy: Enemy
     action: str
     itemId: Optional[str] = None
+    abilityId: Optional[str] = None
     badgeEvents: Optional[List[str]] = None
 
 class SaveData(BaseModel):
@@ -878,7 +882,7 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
             "choices": ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
         }
 
-async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None, active_quest: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None, active_quest: Optional[Dict[str, Any]] = None, current_location: Optional[str] = None) -> Dict[str, Any]:
     """Generate dynamic story based on player choices using Gemini AI."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
@@ -1032,6 +1036,7 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     - Name: {player.name}
     - Class: {player.class_name}
     - Level: {player.level}
+    - Dungeon Floor: {player.dungeonLevel} (higher floors = harder enemies, better rewards)
     - Health: {player.health}/{player.maxHealth}
     - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
     - Inventory: {', '.join([f'{item.name} (x{item.quantity})' for item in player.inventory]) if player.inventory else 'Empty'}
@@ -1046,6 +1051,9 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     
     Active Quest:
     {f"Title: {active_quest.get('title', 'None')}\nDescription: {active_quest.get('description', 'None')}\nObjectives: {active_quest.get('objectives', [])}" if active_quest else "No active quest"}
+    
+    Current Location: {current_location or 'Unknown'} (Floor {player.dungeonLevel})
+    {"Location Context: Generate location-specific content based on the current location. Each location has unique enemies, loot, and narrative themes. Reference the location in your story when appropriate." if current_location else ""}
 
     Previous Story Context (most recent first):
     {context}
@@ -1094,7 +1102,9 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
 
     Important Notes:
     -   Maintain narrative consistency.
-    -   Keep the difficulty appropriate for a level {player.level} {player.class_name}.
+    -   Keep the difficulty appropriate for a level {player.level} {player.class_name} on floor {player.dungeonLevel}.
+    -   Higher floors should have stronger enemies and better rewards. Scale enemy stats by: baseStats * (1 + floorLevel * 0.3)
+    -   Mention the floor depth in the story when appropriate (e.g., "You descend deeper into floor {player.dungeonLevel}...")
     -   Ensure the JSON format is perfect, with keys and values in double quotes.
     -   Do NOT include explanations outside the JSON structure.
     -   Combat should only start when player explicitly chooses to attack in danger phase.
@@ -1147,6 +1157,23 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
         if "story" in result and not isinstance(result.get("story"), str):
             result["story"] = str(result.get("story", ""))
         
+        # Scale enemy stats based on dungeon level
+        dungeon_level = player.dungeonLevel
+        if dungeon_level > 1 and "dangerEncounter" in result and result.get("dangerEncounter") and "enemy" in result["dangerEncounter"]:
+            enemy = result["dangerEncounter"]["enemy"]
+            scale_factor = 1 + (dungeon_level - 1) * 0.3
+            enemy["health"] = int(enemy.get("health", 30) * scale_factor)
+            enemy["maxHealth"] = int(enemy.get("maxHealth", 30) * scale_factor)
+            enemy["attack"] = int(enemy.get("attack", 8) * scale_factor)
+            enemy["defense"] = int(enemy.get("defense", 4) * scale_factor)
+        
+        # Scale rewards based on dungeon level
+        if dungeon_level > 1:
+            if "items" in result and result.get("items"):
+                # Higher floors have better loot chances
+                pass  # Items are already generated by AI, but we could enhance them here
+            # Quest rewards will be scaled when quest is completed
+        
         return result
     except Exception as e:
         logger.error(f"Error during Gemini API call or response processing: {e}")
@@ -1160,13 +1187,28 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
         }
 
 
-async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item_id: Optional[str]) -> Dict[str, Any]:
+async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item_id: Optional[str] = None, ability_id: Optional[str] = None) -> Dict[str, Any]:
     """Process a combat turn using Gemini AI."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
 
     item_used_text = ""
-    if action == "use-item" and item_id:
+    ability_used_text = ""
+    player_abilities = getattr(player, 'abilities', {}) or {}
+    if not isinstance(player_abilities, dict):
+        player_abilities = {}
+    
+    if action == "ability" and ability_id:
+        # Get ability from player abilities
+        ability_data = player_abilities.get(ability_id, {})
+        if ability_data:
+            ability_name = ability_data.get('name', 'Unknown Ability')
+            ability_effect = ability_data.get('effect', '')
+            ability_level = ability_data.get('level', 1)
+            ability_used_text = f"using ability '{ability_name}' (Level {ability_level}) - {ability_effect}"
+        else:
+            ability_used_text = "attempting to use an ability."
+    elif action == "use-item" and item_id:
         item = next((i for i in player.inventory if i.id == item_id), None)
         item_used_text = f"using item '{item.name}' ({item.effect})" if item else "attempting to use an item."
     elif action == "attack":
@@ -1182,20 +1224,24 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
     - Health: {player.health}/{player.maxHealth}
     - Stats: STR {player.stats.strength}, INT {player.stats.intelligence}, AGI {player.stats.agility}
     - Inventory: {', '.join([f'{item.name} (x{item.quantity})' for item in player.inventory]) if player.inventory else 'Empty'}
+    - Abilities: {', '.join([f"{ab.get('name', 'Unknown')} (Lv {ab.get('level', 1)})" for ab in (getattr(player, 'abilities', {}) or {}).values()]) if getattr(player, 'abilities', None) else 'None'}
 
     Enemy: {enemy.name}
     - Health: {enemy.health}/{enemy.maxHealth}
     - Attack: {enemy.attack}, Defense: {enemy.defense}
 
-    Player Action: {action} {item_used_text}
+    Player Action: {action} {ability_used_text or item_used_text}
+    
+    {f"Ability Used: {ability_used_text}" if ability_used_text else ""}
+    {f"Ability Effects: {player_abilities.get(ability_id, {}).get('effect', '')}" if action == "ability" and ability_id and player_abilities.get(ability_id) else ""}
 
     Calculate the outcome of this turn:
-    1.  Determine Player Damage: Based on player action, stats ({player.stats.strength} STR for physical, {player.stats.intelligence} INT for magic if applicable), and enemy defense ({enemy.defense}). Defense action reduces incoming damage. Use reasonable RPG logic.
+    1.  Determine Player Damage: Based on player action, stats ({player.stats.strength} STR for physical, {player.stats.intelligence} INT for magic), and enemy defense ({enemy.defense}). {"If using an ability, apply the ability's effect (e.g., Power Strike = 150% damage, Fireball = area damage, Backstab = 200% critical). Scale damage based on ability level." if action == "ability" and ability_id else ""} Defense action reduces incoming damage. Use reasonable RPG logic.
     2.  Determine Enemy Damage: Based on enemy attack ({enemy.attack}) and player stats (AGI {player.stats.agility} might influence dodging/mitigation). If player defended, reduce damage significantly.
     3.  Update Health: Calculate new health for both player and enemy (cannot go below 0).
     4.  Combat Log: Provide 1-3 short, descriptive sentences narrating the actions and results (e.g., "You strike the {enemy.name} for X damage!", "{enemy.name} retaliates, hitting you for Y damage.").
     5.  Victory/Defeat Check: Determine if player's health is <= 0 (defeat) or enemy's health is <= 0 (victory).
-    6.  Rewards (if victory): If the enemy is defeated, calculate appropriate rewards (XP, maybe some gold or a simple item drop) based on enemy difficulty. A {enemy.name} might grant around {enemy.maxHealth * 2} XP.
+    6.  Rewards (if victory): If the enemy is defeated, calculate appropriate rewards (XP, maybe some gold or a simple item drop) based on enemy difficulty and dungeon floor. Base reward: {enemy.maxHealth * 2} XP. Scale rewards by floor level (floor {player.dungeonLevel} = {1 + (player.dungeonLevel - 1) * 0.3:.1f}x multiplier).
 
     Return the result STRICTLY as JSON:
     {{
@@ -1245,6 +1291,13 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             raise HTTPException(status_code=500, detail="AI combat response was empty or blocked.")
 
         result = parse_json_response(ai_response_text)
+        
+        # Scale rewards based on dungeon level
+        dungeon_level = player.dungeonLevel
+        if dungeon_level > 1 and "rewards" in result and result.get("rewards"):
+            scale_factor = 1 + (dungeon_level - 1) * 0.3
+            result["rewards"]["xp"] = int(result["rewards"].get("xp", 0) * scale_factor)
+            result["rewards"]["gold"] = int(result["rewards"].get("gold", 0) * scale_factor)
         
         # --- Auto-save a combat turn (best-effort) ---
         try:
@@ -1317,7 +1370,11 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             "combatLog": log,
             "victory": victory,
             "defeat": defeat,
-            "rewards": {"xp": enemy.maxHealth * 2, "gold": enemy.maxHealth // 2, "items": []} if victory else None,
+            "rewards": {
+                "xp": int((enemy.maxHealth * 2) * (1 + (player.dungeonLevel - 1) * 0.3)),
+                "gold": int((enemy.maxHealth // 2) * (1 + (player.dungeonLevel - 1) * 0.3)),
+                "items": []
+            } if victory else None,
         }
 
 # --- API Endpoints ---
@@ -1551,7 +1608,8 @@ async def api_generate_story(request: StoryRequest):
             request.choice,
             request.gameState,
             request.multiplayer,
-            request.activeQuest
+            request.activeQuest,
+            request.currentLocation
         )
         
         # CRITICAL: If this is after combat, STRICTLY prevent any new combat encounters
@@ -1747,7 +1805,8 @@ async def api_process_combat(request: CombatRequest):
             request.player,
             request.enemy,
             request.action,
-            request.itemId
+            request.itemId,
+            request.abilityId
         )
         badge_triggers: Set[str] = set(request.badgeEvents or [])
         rewards = result.get("rewards") or {}
@@ -2121,6 +2180,396 @@ async def accept_cameo_invite(request: CameoAcceptRequest):
     except Exception as e:
         logger.error(f"Failed to accept cameo invite {code}: {e}")
         raise HTTPException(status_code=500, detail="Failed to attach cameo to save")
+
+
+# --- Story Endings & Branching ---
+@app.post("/api/endings/detect")
+async def detect_ending(request: Dict[str, Any]):
+    """Detect if story conditions match an ending."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        player_id = request.get("playerId")
+        choice_history = request.get("choiceHistory", [])
+        genre = request.get("genre", "Fantasy")
+        quest_progress = request.get("questProgress", 0)
+        turn_count = request.get("turnCount", 0)
+        
+        # Define ending conditions
+        endings = []
+        
+        # Victory ending - quest completed
+        if quest_progress >= 100:
+            endings.append({
+                "id": f"{genre.lower()}_victory",
+                "title": "The Hero's Triumph",
+                "description": "You have completed your quest and saved the realm!",
+                "genre": genre,
+                "choicePath": [c.get("choice", "") for c in choice_history if c.get("isMajor")],
+                "icon": "🏆",
+                "rarity": "legendary"
+            })
+        
+        # Peaceful ending - avoided all combat
+        combat_encounters = request.get("combatEncounters", 0)
+        if combat_encounters == 0 and turn_count >= 10:
+            endings.append({
+                "id": f"{genre.lower()}_peaceful",
+                "title": "The Path of Peace",
+                "description": "You navigated the adventure without violence, finding a peaceful resolution.",
+                "genre": genre,
+                "choicePath": [c.get("choice", "") for c in choice_history if c.get("isMajor")],
+                "icon": "🕊️",
+                "rarity": "epic"
+            })
+        
+        # Explorer ending - discovered many locations
+        discovered_locations = request.get("discoveredLocations", [])
+        if len(discovered_locations) >= 5:
+            endings.append({
+                "id": f"{genre.lower()}_explorer",
+                "title": "The Great Explorer",
+                "description": "Your thirst for discovery led you to explore every corner of the realm.",
+                "genre": genre,
+                "choicePath": [c.get("choice", "") for c in choice_history if c.get("isMajor")],
+                "icon": "🗺️",
+                "rarity": "rare"
+            })
+        
+        return {"endings": endings}
+    except Exception as e:
+        logger.error(f"Error detecting endings: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to detect endings: {str(e)}")
+
+
+# --- Daily Challenges ---
+@app.get("/api/challenges/daily")
+async def get_daily_challenge(player_id: str):
+    """Get today's daily challenge for a player."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        
+        # Check if challenge exists for today
+        existing = await db.daily_challenges.find_one({"date": today, "playerId": player_id})
+        if existing:
+            return {
+                "id": str(existing["_id"]),
+                "date": existing["date"],
+                "title": existing["title"],
+                "description": existing["description"],
+                "objectives": existing["objectives"],
+                "rewards": existing["rewards"],
+                "completed": existing.get("completed", False),
+                "expiresAt": existing["expiresAt"],
+            }
+        
+        # Generate new challenge
+        challenge_types = [
+            {
+                "title": "Combat Master",
+                "description": "Defeat 3 enemies in combat",
+                "objectives": [{"text": "Defeat 3 enemies", "completed": False}],
+                "rewards": {"xp": 200, "gold": 50}
+            },
+            {
+                "title": "Explorer's Quest",
+                "description": "Discover 2 new locations",
+                "objectives": [{"text": "Discover 2 locations", "completed": False}],
+                "rewards": {"xp": 150, "badge": "explorer_daily"}
+            },
+            {
+                "title": "Puzzle Solver",
+                "description": "Complete 1 puzzle",
+                "objectives": [{"text": "Solve a puzzle", "completed": False}],
+                "rewards": {"xp": 100, "items": ["Puzzle Master Badge"]}
+            }
+        ]
+        
+        import random
+        challenge = random.choice(challenge_types)
+        expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=1)).isoformat()
+        
+        result = await db.daily_challenges.insert_one({
+            "playerId": player_id,
+            "date": today,
+            "title": challenge["title"],
+            "description": challenge["description"],
+            "objectives": challenge["objectives"],
+            "rewards": challenge["rewards"],
+            "completed": False,
+            "expiresAt": expires_at,
+            "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        
+        return {
+            "id": str(result.inserted_id),
+            "date": today,
+            **challenge,
+            "completed": False,
+            "expiresAt": expires_at,
+        }
+    except Exception as e:
+        logger.error(f"Error getting daily challenge: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get daily challenge: {str(e)}")
+
+
+@app.post("/api/challenges/complete")
+async def complete_daily_challenge(request: Dict[str, Any]):
+    """Mark daily challenge as completed and award rewards."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        challenge_id = request.get("challengeId")
+        player_id = request.get("playerId")
+        
+        challenge = await db.daily_challenges.find_one({"_id": ObjectId(challenge_id)})
+        if not challenge:
+            raise HTTPException(status_code=404, detail="Challenge not found")
+        
+        if challenge.get("completed"):
+            return {"message": "Challenge already completed", "rewards": challenge.get("rewards", {})}
+        
+        await db.daily_challenges.update_one(
+            {"_id": ObjectId(challenge_id)},
+            {"$set": {"completed": True, "completedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}}
+        )
+        
+        # Update streak
+        streak_doc = await db.challenge_streaks.find_one({"playerId": player_id})
+        if streak_doc:
+            new_streak = streak_doc.get("streak", 0) + 1
+            await db.challenge_streaks.update_one(
+                {"playerId": player_id},
+                {"$set": {"streak": new_streak, "lastCompleted": datetime.datetime.now(datetime.timezone.utc).isoformat()}}
+            )
+        else:
+            await db.challenge_streaks.insert_one({
+                "playerId": player_id,
+                "streak": 1,
+                "lastCompleted": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            })
+        
+        return {"rewards": challenge.get("rewards", {}), "streak": streak_doc.get("streak", 0) + 1 if streak_doc else 1}
+    except Exception as e:
+        logger.error(f"Error completing challenge: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to complete challenge: {str(e)}")
+
+
+# --- Friends System ---
+@app.post("/api/friends/request")
+async def send_friend_request(request: Dict[str, Any]):
+    """Send a friend request."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        from_player = request.get("fromPlayerId")
+        to_player = request.get("toPlayerId")
+        
+        if from_player == to_player:
+            raise HTTPException(status_code=400, detail="Cannot friend yourself")
+        
+        # Check if request already exists
+        existing = await db.friends.find_one({
+            "$or": [
+                {"fromPlayerId": from_player, "toPlayerId": to_player},
+                {"fromPlayerId": to_player, "toPlayerId": from_player}
+            ]
+        })
+        
+        if existing:
+            if existing.get("status") == "accepted":
+                raise HTTPException(status_code=409, detail="Already friends")
+            raise HTTPException(status_code=409, detail="Friend request already exists")
+        
+        await db.friends.insert_one({
+            "fromPlayerId": from_player,
+            "toPlayerId": to_player,
+            "status": "pending",
+            "createdAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        })
+        
+        return {"message": "Friend request sent"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending friend request: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to send friend request: {str(e)}")
+
+
+@app.post("/api/friends/accept")
+async def accept_friend_request(request: Dict[str, Any]):
+    """Accept a friend request."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        from_player = request.get("fromPlayerId")
+        to_player = request.get("toPlayerId")
+        
+        friend_request = await db.friends.find_one({
+            "fromPlayerId": from_player,
+            "toPlayerId": to_player,
+            "status": "pending"
+        })
+        
+        if not friend_request:
+            raise HTTPException(status_code=404, detail="Friend request not found")
+        
+        await db.friends.update_one(
+            {"_id": friend_request["_id"]},
+            {"$set": {"status": "accepted", "acceptedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}}
+        )
+        
+        return {"message": "Friend request accepted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error accepting friend request: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to accept friend request: {str(e)}")
+
+
+@app.get("/api/friends/{player_id}")
+async def get_friends(player_id: str):
+    """Get all friends for a player."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        friends_list = await db.friends.find({
+            "$or": [
+                {"fromPlayerId": player_id, "status": "accepted"},
+                {"toPlayerId": player_id, "status": "accepted"}
+            ]
+        }).to_list(length=None)
+        
+        result = []
+        for f in friends_list:
+            friend_id = f["toPlayerId"] if f["fromPlayerId"] == player_id else f["fromPlayerId"]
+            # Get friend's stats
+            friend_save = await db.saves.find_one({"playerId": friend_id, "saveSlot": 1})
+            friend_stats = None
+            if friend_save and friend_save.get("gameState", {}).get("player"):
+                p = friend_save["gameState"]["player"]
+                friend_stats = {
+                    "level": p.get("level", 1),
+                    "totalXp": p.get("xp", 0),
+                    "badgesCount": len(friend_save.get("badges", []))
+                }
+            
+            result.append({
+                "playerId": friend_id,
+                "name": friend_id,  # Could be enhanced with player profile
+                "status": "accepted",
+                "requestedBy": f["fromPlayerId"],
+                "addedAt": f.get("acceptedAt", f.get("createdAt", "")),
+                "stats": friend_stats
+            })
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error getting friends: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get friends: {str(e)}")
+
+
+# --- Leaderboards ---
+@app.get("/api/leaderboard/global")
+async def get_global_leaderboard(limit: int = 100):
+    """Get global leaderboard."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        # Aggregate player stats from saves
+        pipeline = [
+            {"$match": {"saveSlot": 1, "deletedAt": None}},
+            {"$group": {
+                "_id": "$playerId",
+                "level": {"$max": "$gameState.player.level"},
+                "totalXp": {"$max": "$gameState.player.xp"},
+                "badgesCount": {"$max": {"$size": {"$ifNull": ["$badges", []]}}},
+                "lastPlayed": {"$max": "$updatedAt"}
+            }},
+            {"$project": {
+                "playerId": "$_id",
+                "level": 1,
+                "totalXp": 1,
+                "badgesCount": 1,
+                "score": {"$add": [{"$multiply": ["$level", 100]}, "$totalXp", {"$multiply": ["$badgesCount", 50]}]}
+            }},
+            {"$sort": {"score": -1}},
+            {"$limit": limit}
+        ]
+        
+        results = await db.saves.aggregate(pipeline).to_list(length=limit)
+        
+        leaderboard = []
+        for idx, entry in enumerate(results, 1):
+            leaderboard.append({
+                "rank": idx,
+                "playerId": entry["playerId"],
+                "name": entry["playerId"],
+                "score": entry["score"],
+                "level": entry.get("level", 1),
+                "badgesCount": entry.get("badgesCount", 0)
+            })
+        
+        return leaderboard
+    except Exception as e:
+        logger.error(f"Error getting global leaderboard: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get leaderboard: {str(e)}")
+
+
+@app.get("/api/leaderboard/friends/{player_id}")
+async def get_friends_leaderboard(player_id: str):
+    """Get leaderboard filtered to friends only."""
+    if db is None:
+        raise HTTPException(status_code=503, detail="Database connection not available.")
+    
+    try:
+        # Get friend IDs
+        friends_list = await db.friends.find({
+            "$or": [
+                {"fromPlayerId": player_id, "status": "accepted"},
+                {"toPlayerId": player_id, "status": "accepted"}
+            ]
+        }).to_list(length=None)
+        
+        friend_ids = set()
+        for f in friends_list:
+            friend_ids.add(f["toPlayerId"] if f["fromPlayerId"] == player_id else f["fromPlayerId"])
+        friend_ids.add(player_id)  # Include self
+        
+        # Get stats for friends
+        saves = await db.saves.find({"playerId": {"$in": list(friend_ids)}, "saveSlot": 1, "deletedAt": None}).to_list(length=None)
+        
+        leaderboard = []
+        for save in saves:
+            player = save.get("gameState", {}).get("player", {})
+            score = (player.get("level", 1) * 100) + player.get("xp", 0) + (len(save.get("badges", [])) * 50)
+            leaderboard.append({
+                "playerId": save["playerId"],
+                "name": save["playerId"],
+                "score": score,
+                "level": player.get("level", 1),
+                "badgesCount": len(save.get("badges", [])),
+                "isFriend": save["playerId"] != player_id
+            })
+        
+        leaderboard.sort(key=lambda x: x["score"], reverse=True)
+        for idx, entry in enumerate(leaderboard, 1):
+            entry["rank"] = idx
+        
+        return leaderboard
+    except Exception as e:
+        logger.error(f"Error getting friends leaderboard: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get friends leaderboard: {str(e)}")
+
 
 # --- Root Endpoint ---
 @app.get("/")

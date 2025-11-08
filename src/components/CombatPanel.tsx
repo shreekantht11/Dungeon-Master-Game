@@ -1,15 +1,17 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Sword, Shield, Heart, Sparkles, Zap, Book } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Sword, Shield, Heart, Sparkles, Zap, Book, Clock } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/services/api';
 import { useTranslation } from 'react-i18next';
-import type { Item, Badge } from '@/store/gameStore';
+import type { Item, Badge, Ability } from '@/store/gameStore';
 import { toast as sonnerToast } from 'sonner';
+import { getAbilitiesForClass } from '@/utils/abilities';
 
 const CombatPanel = () => {
   const { t } = useTranslation();
@@ -19,6 +21,7 @@ const CombatPanel = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [isAttacking, setIsAttacking] = useState(false);
   const [isEnemyAttacking, setIsEnemyAttacking] = useState(false);
+  const [abilityCooldowns, setAbilityCooldowns] = useState<Record<string, number>>({});
 
   const { 
     player, 
@@ -42,6 +45,30 @@ const CombatPanel = () => {
   
   // Get weapons from inventory
   const weapons = player?.inventory.filter(item => item.type === 'weapon') || [];
+  
+  // Get available abilities
+  const availableAbilities = player ? getAbilitiesForClass(player.class).filter(abilityDef => {
+    const ability = player.abilities[abilityDef.id];
+    return ability && ability.level > 0;
+  }) : [];
+
+  // Update cooldowns each turn
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setAbilityCooldowns(prev => {
+        const updated = { ...prev };
+        for (const key in updated) {
+          if (updated[key] > 0) {
+            updated[key] = updated[key] - 1;
+          } else {
+            delete updated[key];
+          }
+        }
+        return updated;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   if (!player || !currentEnemy) return null;
 
@@ -66,6 +93,7 @@ const CombatPanel = () => {
           cameos: currentState.cameos,
         },
         activeQuest: activeQuest,
+        currentLocation: currentState.currentLocation,
       };
 
       const res = await api.generateStory(request as any);
@@ -142,7 +170,27 @@ const CombatPanel = () => {
     }
   };
 
-  const handleAction = async (action: 'attack' | 'defend' | 'use-item' | 'run', itemId?: string) => {
+  const handleAbility = async (abilityId: string) => {
+    if (isProcessing) return;
+    
+    const ability = player.abilities[abilityId];
+    if (!ability) return;
+    
+    if (abilityCooldowns[abilityId] && abilityCooldowns[abilityId] > 0) {
+      toast({ title: 'Ability on Cooldown', description: `${ability.name} is on cooldown for ${abilityCooldowns[abilityId]} more turns.` });
+      return;
+    }
+    
+    // Set cooldown
+    if (ability.cooldown) {
+      setAbilityCooldowns(prev => ({ ...prev, [abilityId]: ability.cooldown! }));
+    }
+    
+    // Use ability in combat
+    await handleAction('attack', undefined, abilityId);
+  };
+
+  const handleAction = async (action: 'attack' | 'defend' | 'use-item' | 'run', itemId?: string, abilityId?: string) => {
     // Prevent concurrent actions
     if (isProcessing) return;
     
@@ -182,8 +230,9 @@ const CombatPanel = () => {
       const result = await api.processCombat({
         player,
         enemy: currentEnemy,
-        action: itemId ? 'use-item' : action,
+        action: abilityId ? 'ability' : (itemId ? 'use-item' : action),
         itemId,
+        abilityId,
       });
 
       // INSTANT UI updates - apply immediately when result arrives
@@ -490,6 +539,54 @@ const CombatPanel = () => {
                   )}
                 </Button>
               ))}
+            </div>
+          </motion.div>
+        )}
+
+        {/* Abilities */}
+        {availableAbilities.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="bg-muted/80 rounded-lg p-4 border-2 border-primary/30"
+          >
+            <p className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Zap className="w-4 h-4" />
+              Abilities:
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              {availableAbilities.map((abilityDef) => {
+                const ability = player.abilities[abilityDef.id];
+                const cooldown = abilityCooldowns[abilityDef.id] || 0;
+                const isOnCooldown = cooldown > 0;
+                
+                return (
+                  <Button
+                    key={abilityDef.id}
+                    onClick={() => handleAbility(abilityDef.id)}
+                    variant="outline"
+                    className="w-full justify-start gap-2 hover:bg-primary/10 hover:border-primary relative"
+                    disabled={isProcessing || isOnCooldown}
+                  >
+                    <Zap className="w-4 h-4 text-primary" />
+                    <div className="flex-1 text-left">
+                      <div className="font-semibold text-sm">{abilityDef.name}</div>
+                      <div className="text-xs text-muted-foreground">{abilityDef.effect}</div>
+                    </div>
+                    {isOnCooldown && (
+                      <Badge variant="secondary" className="text-xs flex items-center gap-1">
+                        <Clock className="w-3 h-3" />
+                        {cooldown}
+                      </Badge>
+                    )}
+                    {abilityDef.manaCost && (
+                      <Badge variant="outline" className="text-xs">
+                        {abilityDef.manaCost} MP
+                      </Badge>
+                    )}
+                  </Button>
+                );
+              })}
             </div>
           </motion.div>
         )}

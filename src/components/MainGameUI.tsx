@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge as UIBadge } from '@/components/ui/badge';
 import dungeonBg from '@/assets/dungeon-bg.jpg';
 import AdventureLogModal from '@/components/AdventureLogModal';
 import InventoryModal from '@/components/InventoryModal';
@@ -71,6 +72,8 @@ const MainGameUI = () => {
     genre,
     gameState,
     activeQuests,
+    currentDungeonLevel,
+    currentLocation,
     updateStory,
     setPlayerChoices,
     addStoryEvent,
@@ -311,6 +314,7 @@ const MainGameUI = () => {
           cameos,
         },
         activeQuest: activeQuest,
+        currentLocation: currentLocation,
       };
 
       // Call backend
@@ -573,9 +577,16 @@ const MainGameUI = () => {
               {/* Player Info */}
               <div className="flex-shrink-0">
                 <h2 className="text-xl font-fantasy text-primary leading-tight">{player.name}</h2>
-                <p className="text-xs text-muted-foreground leading-tight">
-                  Level {player.level} {player.class}
-                </p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs text-muted-foreground leading-tight">
+                    Level {player.level} {player.class}
+                  </p>
+                  {currentDungeonLevel > 1 && (
+                    <UIBadge variant="outline" className="text-xs">
+                      Floor {currentDungeonLevel}
+                    </UIBadge>
+                  )}
+                </div>
               </div>
 
               {/* HP and XP Bars - Stacked Vertically */}

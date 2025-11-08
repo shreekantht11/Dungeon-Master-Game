@@ -24,6 +24,7 @@ interface StoryRequest {
   };
   activeQuest?: any;
   badgeEvents?: string[];
+  currentLocation?: string;
 }
 
 interface StoryResponse {
@@ -63,8 +64,9 @@ interface InitializeResponse {
 interface CombatRequest {
   player: Player;
   enemy: Enemy;
-  action: 'attack' | 'defend' | 'use-item' | 'run';
+  action: 'attack' | 'defend' | 'use-item' | 'run' | 'ability';
   itemId?: string;
+  abilityId?: string;
   badgeEvents?: string[];
 }
 
