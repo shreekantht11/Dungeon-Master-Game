@@ -9,6 +9,7 @@ import { Sword, Shield, Zap, Heart, Star, TrendingUp, Lock, ArrowUp } from 'luci
 import { useTranslation } from 'react-i18next';
 import { getAbilitiesForClass, canUnlockAbility, initializeAbilitiesForClass } from '@/utils/abilities';
 import { toast } from 'sonner';
+import EquipmentPanel from './EquipmentPanel';
 
 const CharacterSheet = () => {
   const { t } = useTranslation();
@@ -167,20 +168,7 @@ const CharacterSheet = () => {
         <Separator />
 
         {/* Equipment */}
-        <div>
-          <h3 className="font-semibold mb-3">Equipment</h3>
-          <div className="grid grid-cols-2 gap-3">
-            {['Weapon', 'Armor', 'Helmet', 'Boots'].map((slot) => (
-              <div
-                key={slot}
-                className="bg-muted/50 border border-dashed border-border rounded-lg p-4 text-center"
-              >
-                <p className="text-xs text-muted-foreground mb-1">{slot}</p>
-                <p className="text-sm">Empty</p>
-              </div>
-            ))}
-          </div>
-        </div>
+        <EquipmentPanel />
 
         <Separator />
 

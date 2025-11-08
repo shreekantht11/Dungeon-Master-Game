@@ -21,11 +21,21 @@ const itemIcons = {
 };
 
 const InventoryModal = ({ isOpen, onClose }: InventoryModalProps) => {
-  const { player, useItem } = useGameStore();
+  const { player, useItem, equipItem } = useGameStore();
+  const equippedItems = player?.equippedItems || {};
 
   const handleUseItem = (itemId: string, itemName: string) => {
     useItem(itemId);
     toast.success(`Used ${itemName}!`);
+  };
+
+  const handleEquip = (itemId: string, slot: string) => {
+    equipItem(itemId, slot);
+    toast.success('Item equipped!');
+  };
+
+  const isEquipped = (itemId: string) => {
+    return Object.values(equippedItems || {}).includes(itemId);
   };
 
   const inventory = player?.inventory || [];
@@ -129,15 +139,39 @@ const InventoryModal = ({ isOpen, onClose }: InventoryModalProps) => {
                               </p>
                             )}
 
-                            {item.type === 'potion' && (
-                              <Button
-                                onClick={() => handleUseItem(item.id, item.name)}
-                                className="w-full bg-primary/20 hover:bg-primary/30 border border-primary/40"
-                                variant="outline"
-                              >
-                                Use Item
-                              </Button>
+                            {item.statBonuses && (
+                              <div className="flex flex-wrap gap-1 mb-3">
+                                {Object.entries(item.statBonuses).map(([stat, value]: [string, any]) => (
+                                  value ? (
+                                    <Badge key={stat} variant="secondary" className="text-xs">
+                                      +{value} {stat}
+                                    </Badge>
+                                  ) : null
+                                ))}
+                              </div>
                             )}
+
+                            <div className="flex gap-2">
+                              {item.type === 'potion' && (
+                                <Button
+                                  onClick={() => handleUseItem(item.id, item.name)}
+                                  className="flex-1 bg-primary/20 hover:bg-primary/30 border border-primary/40"
+                                  variant="outline"
+                                >
+                                  Use Item
+                                </Button>
+                              )}
+                              {item.slot && (
+                                <Button
+                                  onClick={() => handleEquip(item.id, item.slot!)}
+                                  className="flex-1"
+                                  variant={isEquipped(item.id) ? "default" : "outline"}
+                                  disabled={isEquipped(item.id)}
+                                >
+                                  {isEquipped(item.id) ? 'Equipped' : 'Equip'}
+                                </Button>
+                              )}
+                            </div>
                           </Card>
                         </motion.div>
                       );

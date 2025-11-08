@@ -9,10 +9,12 @@ export interface Player {
   maxHealth: number;
   xp: number;
   maxXp: number;
+  coins: number;
   dungeonLevel: number;
   position: { x: number; y: number };
   inventory: Item[];
   abilities: Record<string, Ability>;
+  equippedItems: Record<string, string | null>; // slot -> itemId
   stats: {
     strength: number;
     intelligence: number;
@@ -187,9 +189,21 @@ export interface LeaderboardEntry {
 export interface Item {
   id: string;
   name: string;
-  type: 'weapon' | 'armor' | 'potion' | 'key' | 'quest';
+  type: 'weapon' | 'armor' | 'potion' | 'key' | 'quest' | 'material' | 'consumable';
   effect?: string;
   quantity: number;
+  slot?: 'weapon' | 'armor' | 'helmet' | 'boots' | 'ring' | 'amulet';
+  statBonuses?: {
+    attack?: number;
+    defense?: number;
+    health?: number;
+    strength?: number;
+    intelligence?: number;
+    agility?: number;
+  };
+  price?: number; // Coin cost
+  levelRequirement?: number;
+  rarity?: 'common' | 'uncommon' | 'rare' | 'epic' | 'legendary';
 }
 
 export interface Enemy {
@@ -232,7 +246,7 @@ export interface StoryEvent {
 
 interface GameState {
   // Game State
-  currentScreen: 'intro' | 'character' | 'genre' | 'game' | 'settings';
+  currentScreen: 'intro' | 'character' | 'genre' | 'game' | 'settings' | 'shop' | 'crafting' | 'codex';
   gameStarted: boolean;
   genre: 'Fantasy' | 'Sci-Fi' | 'Mystery' | 'Mythical' | null;
   
@@ -343,6 +357,28 @@ interface GameState {
   unlockAbility: (abilityId: string) => void;
   upgradeAbility: (abilityId: string) => void;
   useAbility: (abilityId: string) => void;
+  // Coin system
+  addCoins: (amount: number) => void;
+  spendCoins: (amount: number) => boolean;
+  // Equipment system
+  equipItem: (itemId: string, slot: string) => void;
+  unequipItem: (slot: string) => void;
+  getEffectiveStats: () => { attack: number; defense: number; health: number; strength: number; intelligence: number; agility: number } | null;
+  // Vendor system
+  vendorReputation: Record<string, number>;
+  setVendorReputation: (vendorId: string, reputation: number) => void;
+  // Codex system
+  codex: {
+    enemies: Record<string, any>;
+    locations: Record<string, any>;
+    items: Record<string, any>;
+    npcs: Record<string, any>;
+    lore: Record<string, any>;
+  };
+  addCodexEntry: (type: 'enemies' | 'locations' | 'items' | 'npcs' | 'lore', id: string, data: any) => void;
+  // Crafting system
+  learnedRecipes: string[];
+  learnRecipe: (recipeId: string) => void;
   updateSettings: (settings: Partial<Pick<GameState, 'language' | 'textSpeed' | 'soundEnabled' | 'musicEnabled'>>) => void;
   setDungeonLevel: (level: number) => void;
   incrementDungeonLevel: () => void;
@@ -394,6 +430,15 @@ const initialState = {
   currentDungeonLevel: 1,
   locationProgress: {} as Record<string, number>,
   locationStats: {} as Record<string, LocationStats>,
+  vendorReputation: {} as Record<string, number>,
+  codex: {
+    enemies: {} as Record<string, any>,
+    locations: {} as Record<string, any>,
+    items: {} as Record<string, any>,
+    npcs: {} as Record<string, any>,
+    lore: {} as Record<string, any>,
+  },
+  learnedRecipes: [] as string[],
   language: 'English' as const,
   textSpeed: 50,
   soundEnabled: true,
@@ -414,6 +459,12 @@ export const useGameStore = create<GameState>((set) => ({
       Rogue: { strength: 7, intelligence: 6, agility: 10 },
     };
     
+    const startingCoins = {
+      Warrior: 200,
+      Mage: 150,
+      Rogue: 250,
+    };
+    
     set({
       player: {
         ...character,
@@ -422,10 +473,19 @@ export const useGameStore = create<GameState>((set) => ({
         maxHealth: 100,
         xp: 0,
         maxXp: 100,
+        coins: startingCoins[character.class],
         dungeonLevel: 1,
         position: { x: 100, y: 300 },
         inventory: [],
         abilities: {},
+        equippedItems: {
+          weapon: null,
+          armor: null,
+          helmet: null,
+          boots: null,
+          ring: null,
+          amulet: null,
+        },
         stats: classStats[character.class],
       },
     });
@@ -698,6 +758,156 @@ export const useGameStore = create<GameState>((set) => ({
       if (!ability) return state;
       // Ability usage effects are handled in combat
       return state;
+    }),
+  
+  // Coin system actions
+  addCoins: (amount) =>
+    set((state) => {
+      if (!state.player) return state;
+      return {
+        player: {
+          ...state.player,
+          coins: state.player.coins + amount,
+        },
+      };
+    }),
+  
+  spendCoins: (amount) => {
+    const state = useGameStore.getState();
+    if (!state.player || state.player.coins < amount) return false;
+    useGameStore.setState({
+      player: {
+        ...state.player,
+        coins: state.player.coins - amount,
+      },
+    });
+    return true;
+  },
+  
+  // Equipment system actions
+  equipItem: (itemId, slot) =>
+    set((state) => {
+      if (!state.player) return state;
+      const item = state.player.inventory.find((i) => i.id === itemId);
+      if (!item || !item.slot || item.slot !== slot) return state;
+      
+      // Unequip current item in slot if any
+      const currentEquipped = state.player.equippedItems[slot];
+      let newInventory = [...state.player.inventory];
+      if (currentEquipped) {
+        const currentItem = newInventory.find((i) => i.id === currentEquipped);
+        if (currentItem) {
+          newInventory = newInventory.map((i) =>
+            i.id === currentEquipped ? { ...i, quantity: i.quantity + 1 } : i
+          );
+        }
+      }
+      
+      // Remove item from inventory and equip it
+      const itemIndex = newInventory.findIndex((i) => i.id === itemId);
+      if (itemIndex === -1) return state;
+      
+      newInventory = newInventory.map((i, idx) =>
+        idx === itemIndex ? { ...i, quantity: i.quantity - 1 } : i
+      ).filter((i) => i.quantity > 0);
+      
+      return {
+        player: {
+          ...state.player,
+          inventory: newInventory,
+          equippedItems: {
+            ...state.player.equippedItems,
+            [slot]: itemId,
+          },
+        },
+      };
+    }),
+  
+  unequipItem: (slot) =>
+    set((state) => {
+      if (!state.player) return state;
+      const equippedItemId = state.player.equippedItems[slot];
+      if (!equippedItemId) return state;
+      
+      const item = state.player.inventory.find((i) => i.id === equippedItemId) || 
+        { id: equippedItemId, name: 'Unknown', type: 'weapon' as const, quantity: 0 };
+      
+      return {
+        player: {
+          ...state.player,
+          inventory: [
+            ...state.player.inventory,
+            { ...item, quantity: item.quantity + 1 },
+          ],
+          equippedItems: {
+            ...state.player.equippedItems,
+            [slot]: null,
+          },
+        },
+      };
+    }),
+  
+  getEffectiveStats: () => {
+    const state = useGameStore.getState();
+    if (!state.player) return null;
+    
+    const baseStats = {
+      attack: state.player.stats.strength * 2 + state.player.stats.agility,
+      defense: state.player.stats.strength + state.player.stats.agility,
+      health: state.player.maxHealth,
+      strength: state.player.stats.strength,
+      intelligence: state.player.stats.intelligence,
+      agility: state.player.stats.agility,
+    };
+    
+    // Add equipment bonuses
+    Object.values(state.player.equippedItems).forEach((itemId) => {
+      if (!itemId) return;
+      const item = state.player?.inventory.find((i) => i.id === itemId);
+      if (item?.statBonuses) {
+        baseStats.attack += item.statBonuses.attack || 0;
+        baseStats.defense += item.statBonuses.defense || 0;
+        baseStats.health += item.statBonuses.health || 0;
+        baseStats.strength += item.statBonuses.strength || 0;
+        baseStats.intelligence += item.statBonuses.intelligence || 0;
+        baseStats.agility += item.statBonuses.agility || 0;
+      }
+    });
+    
+    return baseStats;
+  },
+  
+  // Vendor system actions
+  setVendorReputation: (vendorId, reputation) =>
+    set((state) => ({
+      vendorReputation: {
+        ...state.vendorReputation,
+        [vendorId]: reputation,
+      },
+    })),
+  
+  // Codex system actions
+  addCodexEntry: (type, id, data) =>
+    set((state) => ({
+      codex: {
+        ...state.codex,
+        [type]: {
+          ...state.codex[type],
+          [id]: {
+            ...data,
+            discoveredAt: new Date().toISOString(),
+          },
+        },
+      },
+    })),
+  
+  // Crafting system actions
+  learnRecipe: (recipeId) =>
+    set((state) => {
+      if (state.learnedRecipes.includes(recipeId)) return state;
+      return {
+        learnedRecipes: [...state.learnedRecipes, recipeId],
+      };
     }),
   
   updateSettings: (settings) => set(settings),

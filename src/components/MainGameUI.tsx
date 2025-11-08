@@ -8,6 +8,7 @@ import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge as UIBadge } from '@/components/ui/badge';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import dungeonBg from '@/assets/dungeon-bg.jpg';
 import AdventureLogModal from '@/components/AdventureLogModal';
 import InventoryModal from '@/components/InventoryModal';
@@ -58,6 +59,9 @@ import {
   Gauge,
   Clock,
   Loader2,
+  ShoppingCart,
+  Hammer,
+  BookOpen,
 } from 'lucide-react';
 
 const MainGameUI = () => {
@@ -111,9 +115,9 @@ const MainGameUI = () => {
   const [activeTab, setActiveTab] = useState('stats');
   const [loadingStory, setLoadingStory] = useState(false);
   const [showExitDialog, setShowExitDialog] = useState(false);
-  const [storySpeed, setStorySpeed] = useState(1); // 0.5x, 1x, 2x multiplier
   const [quickSaves, setQuickSaves] = useState<any[]>([]);
   const { textSpeed, updateSettings, authUser } = useGameStore();
+  const [lastDisplayedStory, setLastDisplayedStory] = useState<string>('');
 
   // Auto-save setup
   useEffect(() => {
@@ -234,13 +238,21 @@ const MainGameUI = () => {
   useEffect(() => {
     if (!currentStory) return;
     
+    // Skip animation if this is the same story (e.g., coming back from settings)
+    if (currentStory === lastDisplayedStory) {
+      setDisplayedText(currentStory);
+      setIsTyping(false);
+      return;
+    }
+    
     setIsTyping(true);
     setDisplayedText('');
+    setLastDisplayedStory(currentStory);
     let index = 0;
     
-    // Calculate speed: base textSpeed (50ms) divided by storySpeed multiplier
+    // Always use 2x speed (base speed / 2)
     const baseSpeed = textSpeed || 50;
-    const actualSpeed = baseSpeed / storySpeed;
+    const actualSpeed = baseSpeed / 2;
     
     const interval = setInterval(() => {
       if (index < currentStory.length) {
@@ -253,7 +265,7 @@ const MainGameUI = () => {
     }, actualSpeed);
 
     return () => clearInterval(interval);
-  }, [currentStory, storySpeed, textSpeed]);
+  }, [currentStory, textSpeed, lastDisplayedStory]);
 
   const handleChoice = async (choice: string) => {
     if (!player) return;
@@ -589,7 +601,7 @@ const MainGameUI = () => {
                 </div>
               </div>
 
-              {/* HP and XP Bars - Stacked Vertically */}
+              {/* HP, XP, and Coins - Stacked Vertically */}
               <div className="flex flex-col gap-1.5 min-w-40">
                 {/* Health Bar */}
                 <div>
@@ -611,6 +623,16 @@ const MainGameUI = () => {
                     </span>
                   </div>
                   <Progress value={xpPercentage} className="h-2 bg-muted" />
+                </div>
+
+                {/* Coins Display */}
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-yellow-500/20 border border-yellow-500/30">
+                    <span className="text-yellow-500 font-bold text-sm">🪙</span>
+                    <span className="text-xs font-bold text-yellow-600 dark:text-yellow-400">
+                      {player.coins || 0}
+                    </span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -671,25 +693,8 @@ const MainGameUI = () => {
               )}
             </div>
 
-            {/* Right Section: Speed Controls, Quick Saves, Actions */}
-            <div className="flex items-center gap-2 flex-shrink-0 ml-auto min-w-[260px] flex-wrap justify-end">
-              {/* Story Speed Controls */}
-              <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-background/50 border border-border/50">
-                <Gauge className="w-3 h-3 text-muted-foreground" />
-                {[0.5, 1, 2].map((speed) => (
-                  <Button
-                    key={speed}
-                    variant={storySpeed === speed ? 'default' : 'ghost'}
-                    size="sm"
-                    className="h-6 px-1.5 text-xs"
-                    onClick={() => setStorySpeed(speed)}
-                    title={`${speed}x speed`}
-                  >
-                    {speed}x
-                  </Button>
-                ))}
-              </div>
-
+            {/* Right Section: Quick Saves, Actions */}
+            <div className="flex items-center gap-2 flex-shrink-0 ml-auto min-w-[200px] flex-wrap justify-end">
               {/* Quick Save Slots */}
               {quickSaves.length > 0 && (
                 <div className="flex items-center gap-1">
@@ -732,6 +737,33 @@ const MainGameUI = () => {
                 title={t('game.inventory')}
               >
                 <Package className="w-5 h-5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
+                onClick={() => setScreen('shop')}
+                title="Vendor Shop"
+              >
+                <ShoppingCart className="w-5 h-5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
+                onClick={() => setScreen('crafting')}
+                title="Crafting"
+              >
+                <Hammer className="w-5 h-5" />
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="hover:bg-primary/10"
+                onClick={() => setScreen('codex')}
+                title="Codex"
+              >
+                <BookOpen className="w-5 h-5" />
               </Button>
               <Button
                 variant="outline"
@@ -932,19 +964,19 @@ const MainGameUI = () => {
                 <p className="text-xs text-muted-foreground font-semibold mb-2">
                   What will you do?
                 </p>
-                <div className="grid grid-cols-1 gap-1.5">
+                <div className="grid grid-cols-1 gap-2">
                   {playerChoices.map((choice, index) => (
                     <Button
                       key={index}
                       onClick={() => handleChoice(choice)}
                       disabled={loadingStory}
-                      className={`w-full justify-start text-left h-auto py-1.5 px-3 bg-primary/10 hover:bg-primary/20 border border-primary/30 hover:border-primary transition-all duration-300 group ${
+                      className={`w-full justify-start text-left h-auto py-3 px-4 bg-primary/10 hover:bg-primary/20 border border-primary/30 hover:border-primary transition-all duration-300 group ${
                         loadingStory ? 'opacity-60 cursor-not-allowed' : ''
                       }`}
                       variant="outline"
                     >
-                      <Play className="w-3 h-3 mr-2 group-hover:translate-x-1 transition-transform flex-shrink-0" />
-                      <span className="font-elegant text-xs leading-tight">{choice}</span>
+                      <Play className="w-4 h-4 mr-3 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+                      <span className="font-elegant text-base leading-relaxed">{choice}</span>
                     </Button>
                   ))}
                 </div>

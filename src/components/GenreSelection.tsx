@@ -130,7 +130,7 @@ const GenreSelection = () => {
                 transition={{ delay: index * 0.1 }}
               >
                 <Card
-                  className="group relative overflow-hidden cursor-pointer border-2 border-primary/30 hover:border-primary transition-all duration-500 h-96"
+                  className="group relative overflow-hidden cursor-pointer border-2 border-primary/30 hover:border-primary transition-all duration-500 h-64"
                   onClick={() => handleSelectGenre(genre.name)}
                   onMouseEnter={() => setHoveredGenre(genre.name)}
                   onMouseLeave={() => setHoveredGenre(null)}
@@ -145,7 +145,7 @@ const GenreSelection = () => {
                   <div className={`absolute inset-0 bg-gradient-to-br ${genre.color} opacity-60 group-hover:opacity-75 transition-opacity duration-500`} />
                   
                   {/* Content */}
-                  <div className="relative h-full p-8 flex flex-col justify-between">
+                  <div className="relative h-full p-5 flex flex-col justify-between">
                     <div>
                       <div className="flex items-center justify-between mb-2">
                         <motion.div
@@ -153,18 +153,18 @@ const GenreSelection = () => {
                           whileHover={{ scale: 1.1 }}
                           transition={{ duration: 0.3 }}
                         >
-                          <Icon className="w-16 h-16 text-white drop-shadow-lg" />
+                          <Icon className="w-12 h-12 text-white drop-shadow-lg" />
                         </motion.div>
-                        <Badge variant="secondary" className="bg-white/20 text-white border-white/30">
+                        <Badge variant="secondary" className="bg-white/20 text-white border-white/30 text-xs">
                           {genre.popularity}
                         </Badge>
                       </div>
                       
-                      <h2 className="text-4xl font-fantasy text-white mb-2 drop-shadow-lg">
+                      <h2 className="text-3xl font-fantasy text-white mb-2 drop-shadow-lg">
                         {genre.name}
                       </h2>
                       
-                      <p className="text-white/90 font-elegant text-base drop-shadow-md mb-4">
+                      <p className="text-white/90 font-elegant text-sm drop-shadow-md mb-3">
                         {genre.description}
                       </p>
                     </div>
@@ -177,9 +177,9 @@ const GenreSelection = () => {
                           animate={{ opacity: 1, y: 0 }}
                           exit={{ opacity: 0, y: 10 }}
                           transition={{ duration: 0.3 }}
-                          className="bg-black/40 backdrop-blur-sm rounded-lg p-4 border border-white/20"
+                          className="bg-black/40 backdrop-blur-sm rounded-lg p-3 border border-white/20"
                         >
-                          <p className="text-white/95 text-sm font-elegant italic leading-relaxed">
+                          <p className="text-white/95 text-xs font-elegant italic leading-relaxed">
                             "{genre.preview}"
                           </p>
                         </motion.div>

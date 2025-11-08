@@ -24,6 +24,8 @@ const Settings = () => {
     player,
     gameState,
     authUser,
+    currentScreen,
+    currentStory,
   } = useGameStore();
   
   const [fontSize, setFontSize] = useState(16);
@@ -140,11 +142,12 @@ const Settings = () => {
           <Button
             variant="ghost"
             onClick={() => {
-              // Only go back to game if there's an active game session
-              // Check if player exists and game is initialized
-              if (player && gameState.isInitialized) {
+              // Go back to the screen we came from
+              // Only go to game if we have an active game session (player, initialized, and current story)
+              if (player && gameState.isInitialized && currentStory) {
                 setScreen('game');
               } else {
+                // Always go back to intro if we came from intro or if no active game
                 setScreen('intro');
               }
             }}

@@ -200,7 +200,12 @@ class Item(BaseModel):
     name: str
     type: str
     effect: Optional[str] = None
-    quantity: int
+    quantity: int = 1
+    slot: Optional[str] = None
+    statBonuses: Dict[str, int] = {}
+    price: Optional[int] = None
+    levelRequirement: Optional[int] = None
+    rarity: Optional[str] = None
 
 class Player(BaseModel):
     name: str
@@ -211,9 +216,19 @@ class Player(BaseModel):
     maxHealth: int
     xp: int
     maxXp: int
+    coins: int = 200
     dungeonLevel: int = 1
     # position: Dict[str, int] # Assuming frontend handles position
-    inventory: List[Item]
+    inventory: List[Item] = []
+    abilities: Dict[str, Any] = {}
+    equippedItems: Dict[str, Optional[str]] = {
+        "weapon": None,
+        "armor": None,
+        "helmet": None,
+        "boots": None,
+        "ring": None,
+        "amulet": None,
+    }
     stats: PlayerStats
 
 class Enemy(BaseModel):
@@ -1241,7 +1256,7 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
     3.  Update Health: Calculate new health for both player and enemy (cannot go below 0).
     4.  Combat Log: Provide 1-3 short, descriptive sentences narrating the actions and results (e.g., "You strike the {enemy.name} for X damage!", "{enemy.name} retaliates, hitting you for Y damage.").
     5.  Victory/Defeat Check: Determine if player's health is <= 0 (defeat) or enemy's health is <= 0 (victory).
-    6.  Rewards (if victory): If the enemy is defeated, calculate appropriate rewards (XP, maybe some gold or a simple item drop) based on enemy difficulty and dungeon floor. Base reward: {enemy.maxHealth * 2} XP. Scale rewards by floor level (floor {player.dungeonLevel} = {1 + (player.dungeonLevel - 1) * 0.3:.1f}x multiplier).
+    6.  Rewards (if victory): If the enemy is defeated, calculate appropriate rewards (XP, coins, maybe some gold or a simple item drop) based on enemy difficulty and dungeon floor. Base reward: {enemy.maxHealth * 2} XP and {enemy.maxHealth} coins. Scale rewards by floor level (floor {player.dungeonLevel} = {1 + (player.dungeonLevel - 1) * 0.3:.1f}x multiplier).
 
     Return the result STRICTLY as JSON:
     {{
@@ -1252,7 +1267,7 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
       "combatLog": ["Narration sentence 1.", "Narration sentence 2."],
       "victory": <true_if_enemy_defeated_else_false>,
       "defeat": <true_if_player_defeated_else_false>,
-      "rewards": {{ "xp": <xp_amount_if_victory_else_0>, "gold": <gold_amount_if_victory_else_0>, "items": [{{ "id": "item_goblin_ear_1", "name": "Goblin Ear", "type": "quest", "quantity": 1 }}] }} // Optional: Include ONLY if victory
+      "rewards": {{ "xp": <xp_amount_if_victory_else_0>, "coins": <coins_amount_if_victory_else_0>, "gold": <gold_amount_if_victory_else_0>, "items": [{{ "id": "item_goblin_ear_1", "name": "Goblin Ear", "type": "quest", "quantity": 1 }}] }} // Optional: Include ONLY if victory. Coins should be similar to XP amount.
     }}
 
     Important Notes:
@@ -1372,6 +1387,7 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             "defeat": defeat,
             "rewards": {
                 "xp": int((enemy.maxHealth * 2) * (1 + (player.dungeonLevel - 1) * 0.3)),
+                "coins": int((enemy.maxHealth) * (1 + (player.dungeonLevel - 1) * 0.3)),
                 "gold": int((enemy.maxHealth // 2) * (1 + (player.dungeonLevel - 1) * 0.3)),
                 "items": []
             } if victory else None,
