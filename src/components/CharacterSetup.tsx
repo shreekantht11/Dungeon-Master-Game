@@ -10,6 +10,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import desertBg from '@/assets/desert-bg.jpg';
 import warriorPortrait from '@/assets/warrior-portrait.jpg';
 import { Swords, Wand2, Zap, ArrowRight, Info, Sparkles, Dice6, ArrowLeft } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 const classes = [
   {
@@ -61,10 +62,19 @@ const CharacterSetup = () => {
   const [name, setName] = useState('');
   const [selectedClass, setSelectedClass] = useState<'Warrior' | 'Mage' | 'Rogue'>('Warrior');
   const [gender, setGender] = useState<'Male' | 'Female' | 'Other'>('Male');
+  const [selectedLanguage, setSelectedLanguage] = useState<'English' | 'Kannada' | 'Telugu'>('English');
   const [expandedClass, setExpandedClass] = useState<string | null>(null);
   const [hoveredClass, setHoveredClass] = useState<string | null>(null);
   
-  const { createCharacter, setScreen, authUser } = useGameStore();
+  const { createCharacter, setScreen, authUser, updateSettings } = useGameStore();
+  const { i18n } = useTranslation();
+
+  // Language mapping: display names to i18n codes
+  const languageMap: Record<string, string> = {
+    'English': 'en',
+    'Kannada': 'kn',
+    'Telugu': 'te',
+  };
 
   // Auto-fill name from Google sign-in if available
   useEffect(() => {
@@ -95,6 +105,13 @@ const CharacterSetup = () => {
 
   const handleCreate = () => {
     if (!name.trim()) return;
+    
+    // Set language in gameStore and i18n
+    updateSettings({ language: selectedLanguage });
+    const langCode = languageMap[selectedLanguage];
+    if (langCode) {
+      i18n.changeLanguage(langCode);
+    }
     
     createCharacter({
       name: name.trim(),
@@ -342,6 +359,23 @@ const CharacterSetup = () => {
                         className="flex-1 h-9 text-sm"
                       >
                         {g}
+                      </Button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Language Selection */}
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-elegant">Story Language</Label>
+                  <div className="flex gap-2">
+                    {(['English', 'Kannada', 'Telugu'] as const).map((lang) => (
+                      <Button
+                        key={lang}
+                        variant={selectedLanguage === lang ? 'default' : 'outline'}
+                        onClick={() => setSelectedLanguage(lang)}
+                        className="flex-1 h-9 text-sm"
+                      >
+                        {lang}
                       </Button>
                     ))}
                   </div>

@@ -11,6 +11,7 @@
 # - POST /api/character - Save/load character data
 # - GET /api/adventure-log - Retrieve story history
 import google.generativeai as genai
+from google.generativeai.types import GenerationConfig
 import os
 import json
 import secrets
@@ -27,6 +28,8 @@ from contextlib import asynccontextmanager
 from pymongo import ASCENDING, DESCENDING
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+import asyncio
+import time
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -107,6 +110,126 @@ gemini_api_key = os.getenv("GEMINI_API_KEY")
 model = None
 available_models = []
 selected_model_name = None
+
+# Generation config for faster responses
+fast_generation_config = GenerationConfig(
+    temperature=0.7,  # Lower temperature for faster, more focused responses
+    max_output_tokens=2048,  # Increased for longer responses (especially for Kannada/Telugu)
+    top_p=0.9,  # Nucleus sampling for faster generation
+)
+
+# --- Pre-generation Cache System ---
+# In-memory cache for pre-generated story responses
+pregenerated_stories_cache: Dict[str, Dict[str, Any]] = {}
+# Cache metadata: store timestamp and player_id for cleanup
+cache_metadata: Dict[str, Dict[str, Any]] = {}  # key -> {timestamp, player_id}
+MAX_CACHE_SIZE = 1000  # Maximum number of cached entries
+CACHE_EXPIRY_SECONDS = 600  # 10 minutes
+
+def normalize_choice_text(choice_text: str) -> str:
+    """Normalize choice text for consistent cache keys."""
+    if not choice_text:
+        return "no_choice"
+    # Lowercase, strip, and remove extra spaces
+    normalized = " ".join(choice_text.lower().strip().split())
+    return normalized
+
+def get_cache_key(player_id: str, turn_count: int, choice_text: str) -> str:
+    """Generate a consistent cache key for a story response."""
+    normalized_choice = normalize_choice_text(choice_text)
+    return f"{player_id}_{turn_count}_{normalized_choice}"
+
+def find_cached_response(player_id: str, turn_count: int, choice_text: str) -> Optional[Dict[str, Any]]:
+    """Find cached response with multiple fallback strategies."""
+    # Strategy 1: Exact match with normalized choice text
+    cache_key = get_cache_key(player_id, turn_count, choice_text)
+    cached = pregenerated_stories_cache.get(cache_key)
+    if cached:
+        logger.info(f"Cache HIT (exact): player={player_id}, turn={turn_count}, choice='{choice_text[:50]}...'")
+        return cached
+    
+    # Strategy 2: Try with different turn counts (current, current-1, current+1)
+    for offset in [-1, 1]:
+        alt_turn = turn_count + offset
+        if alt_turn >= 0:
+            alt_key = get_cache_key(player_id, alt_turn, choice_text)
+            cached = pregenerated_stories_cache.get(alt_key)
+            if cached:
+                logger.info(f"Cache HIT (turn offset {offset}): player={player_id}, turn={alt_turn}, choice='{choice_text[:50]}...'")
+                return cached
+    
+    # Strategy 3: Try fuzzy matching by choice text similarity
+    normalized_choice = normalize_choice_text(choice_text)
+    for key, metadata in cache_metadata.items():
+        if metadata.get("player_id") == player_id:
+            cached_choice = normalize_choice_text(metadata.get("choice_text", ""))
+            # Check if choices are similar (contain same words or very similar)
+            if cached_choice and normalized_choice:
+                # Simple similarity: check if one contains the other or they share significant words
+                cached_words = set(cached_choice.split())
+                choice_words = set(normalized_choice.split())
+                if len(cached_words) > 0 and len(choice_words) > 0:
+                    # If more than 50% of words match, consider it a match
+                    common_words = cached_words.intersection(choice_words)
+                    similarity = len(common_words) / max(len(cached_words), len(choice_words))
+                    if similarity > 0.5:
+                        cached = pregenerated_stories_cache.get(key)
+                        if cached:
+                            logger.info(f"Cache HIT (fuzzy match): player={player_id}, key={key}, choice='{choice_text[:50]}...'")
+                            return cached
+    
+    # Cache miss
+    logger.debug(f"Cache MISS: player={player_id}, turn={turn_count}, choice='{choice_text[:50]}...', tried_key={cache_key}")
+    return None
+
+def get_cache_key_by_index(player_id: str, turn_count: int, choice_index: int) -> str:
+    """Generate cache key using choice index (for pre-generation)."""
+    return f"{player_id}_{turn_count}_choice{choice_index}"
+
+def cleanup_cache():
+    """Remove expired entries and enforce size limit."""
+    global pregenerated_stories_cache, cache_metadata
+    current_time = time.time()
+    
+    # Remove expired entries
+    expired_keys = []
+    for key, metadata in cache_metadata.items():
+        if current_time - metadata.get("timestamp", 0) > CACHE_EXPIRY_SECONDS:
+            expired_keys.append(key)
+    
+    for key in expired_keys:
+        pregenerated_stories_cache.pop(key, None)
+        cache_metadata.pop(key, None)
+    
+    if expired_keys:
+        logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+    
+    # Enforce size limit (LRU eviction - remove oldest entries)
+    if len(pregenerated_stories_cache) > MAX_CACHE_SIZE:
+        # Sort by timestamp and remove oldest
+        sorted_entries = sorted(cache_metadata.items(), key=lambda x: x[1].get("timestamp", 0))
+        entries_to_remove = len(pregenerated_stories_cache) - MAX_CACHE_SIZE
+        for key, _ in sorted_entries[:entries_to_remove]:
+            pregenerated_stories_cache.pop(key, None)
+            cache_metadata.pop(key, None)
+        logger.debug(f"Removed {entries_to_remove} oldest cache entries to enforce size limit")
+
+def invalidate_player_cache(player_id: str, keep_turn: Optional[int] = None):
+    """Remove cache entries for a specific player, optionally keeping entries for a specific turn."""
+    global pregenerated_stories_cache, cache_metadata
+    keys_to_remove = []
+    for key, metadata in cache_metadata.items():
+        if metadata.get("player_id") == player_id:
+            # If keep_turn is specified, don't remove entries for that turn
+            if keep_turn is not None and metadata.get("turn_count") == keep_turn:
+                continue
+            keys_to_remove.append(key)
+    
+    for key in keys_to_remove:
+        pregenerated_stories_cache.pop(key, None)
+        cache_metadata.pop(key, None)
+    if keys_to_remove:
+        logger.debug(f"Invalidated {len(keys_to_remove)} cache entries for player {player_id} (kept turn {keep_turn})")
 
 if not gemini_api_key:
     logger.error("GEMINI_API_KEY not found in environment variables.")
@@ -266,6 +389,7 @@ class StoryRequest(BaseModel):
     badgeEvents: Optional[List[str]] = None  # Milestone events triggered on the client
     choiceHistory: Optional[List[Dict[str, Any]]] = None  # Track major choices for endings
     currentLocation: Optional[str] = None  # Current location ID
+    language: Optional[str] = "en"  # Language code: 'en', 'kn', 'te'
 
 class CombatRequest(BaseModel):
     player: Player
@@ -766,8 +890,48 @@ def parse_json_response(text: str) -> Dict[str, Any]:
     """Attempts to parse JSON from Gemini's response, handling potential markdown code blocks."""
     try:
         # Remove markdown code block fences if present
-        cleaned_text = text.strip().removeprefix('```json').removesuffix('```').strip()
-        return json.loads(cleaned_text)
+        cleaned_text = text.strip()
+        # Remove ```json and ``` markers
+        if cleaned_text.startswith('```json'):
+            cleaned_text = cleaned_text[7:].strip()
+        if cleaned_text.startswith('```'):
+            cleaned_text = cleaned_text[3:].strip()
+        if cleaned_text.endswith('```'):
+            cleaned_text = cleaned_text[:-3].strip()
+        cleaned_text = cleaned_text.strip()
+        
+        # Try to parse the JSON
+        try:
+            return json.loads(cleaned_text)
+        except json.JSONDecodeError as json_err:
+            # If JSON is incomplete, try to extract what we can
+            logger.warning(f"JSON parse error: {json_err}. Response length: {len(cleaned_text)}")
+            logger.warning(f"Response preview (first 500 chars): {cleaned_text[:500]}")
+            
+            # Try to find the last complete JSON object/array
+            # Look for the last complete closing brace, but make sure it's properly balanced
+            last_brace = cleaned_text.rfind('}')
+            if last_brace > 0:
+                # Count braces to ensure we have a balanced JSON
+                open_braces = cleaned_text[:last_brace + 1].count('{')
+                close_braces = cleaned_text[:last_brace + 1].count('}')
+                if open_braces == close_braces:
+                    try:
+                        # Try parsing up to the last complete brace
+                        partial_json = cleaned_text[:last_brace + 1]
+                        parsed = json.loads(partial_json)
+                        logger.warning(f"Successfully parsed partial JSON (truncated response). Original length: {len(cleaned_text)}, Parsed length: {len(partial_json)}")
+                        return parsed
+                    except json.JSONDecodeError as partial_err:
+                        logger.warning(f"Failed to parse partial JSON: {partial_err}")
+            
+            # If that fails, try to reconstruct a minimal valid JSON
+            # This is a last resort fallback
+            logger.error(f"Failed to parse JSON response. Full response length: {len(cleaned_text)}")
+            logger.error(f"Last 200 chars of response: {cleaned_text[-200:]}")
+            
+            # If that fails, raise the original error
+            raise json_err
     except json.JSONDecodeError as e:
         logger.error(f"Failed to parse JSON response: {e}\nResponse text:\n{text}")
         raise HTTPException(status_code=500, detail="AI response format error.")
@@ -776,7 +940,7 @@ def parse_json_response(text: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Internal server error during response parsing.")
 
 # --- AI Interaction Functions (Async) ---
-async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[str, Any]:
+async def generate_initial_loot_and_quest(player: Player, genre: str, language: str = "en") -> Dict[str, Any]:
     """Generate initial loot and quest at game start."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
@@ -784,13 +948,13 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     # Genre-specific story themes and examples
     genre_themes = {
         "Fantasy": {
-            "themes": "medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles",
-            "examples": "protecting a village from goblins, finding a lost magical artifact, rescuing a kidnapped princess, investigating a cursed forest, helping a wizard recover stolen spellbook, exploring an ancient dragon's lair, stopping a dark curse, finding a legendary sword",
+            "themes": "medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles, villages, lost people, kidnapped children, mysterious disappearances",
+            "examples": "protecting a village from goblins, finding a lost magical artifact, rescuing a kidnapped princess, finding lost villagers who disappeared, rescuing village children kidnapped by a creature, helping a wizard recover stolen spellbook, exploring an ancient dragon's lair, finding a legendary sword, investigating a missing merchant caravan, searching for a lost explorer in the mountains, helping a village recover stolen livestock, finding a missing knight, investigating strange lights in the forest, helping villagers escape a monster, searching for a lost treasure map",
             "items": "Medieval weapons and items: Sword, Shield, Bow, Mace, Dagger, Staff, Armor, Helmet, Potion, Scroll, Enchanted Ring, Magic Wand, Crossbow, Axe, Spear, Chainmail, Gauntlets, Boots"
         },
         "Sci-Fi": {
             "themes": "space, technology, aliens, futuristic settings, space stations, planets, robots, cybernetics, space travel, advanced weapons, holograms, space colonies",
-            "examples": "investigating a space station anomaly, rescuing colonists from alien attack, finding a lost data core, repairing a damaged ship, exploring an alien planet, stopping a rogue AI, finding rare energy crystals, investigating strange signals",
+            "examples": "investigating a distress signal from Mars colony, rescuing scientists on Jupiter's moon Europa, finding a lost data core on Mercury, repairing a damaged ship near Saturn, exploring a mining base on the Moon, stopping a rogue AI on Venus, finding rare energy crystals on Neptune, investigating strange signals from Pluto, exploring a research station on Earth's orbit, investigating anomalies on Uranus, helping colonists on Mars, searching for survivors on the Sun's solar station",
             "items": "Modern weapons like PUBG/Free Fire: Assault Rifle, Pistol, Grenade, Bomb, Sniper Rifle, SMG, Shotgun, Energy Rifle, Plasma Gun, Laser Pistol, Frag Grenade, Smoke Grenade, Body Armor, Helmet, Medkit, Energy Shield, Tech Scanner, Cybernetic Implant"
         },
         "Mystery": {
@@ -807,6 +971,14 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     
     genre_info = genre_themes.get(genre, genre_themes["Fantasy"])
     
+    # Language instruction mapping
+    language_instructions = {
+        "en": "Generate the story, quest descriptions, and choices in English. Use simple, clear English words.",
+        "kn": "CRITICAL: Generate EVERYTHING in Kannada (ಕನ್ನಡ). This includes: story text, quest titles, quest descriptions, choices, item names, greetings, and ALL narrative text. Use ONLY Kannada script. NO English words. NO mixing languages. Translate ALL game terms, proper nouns, technical terms, and game names to Kannada. The ENTIRE response must be 100% in Kannada. Do NOT use English words like 'Welcome', 'Warrior', 'Gilded Scrolls AI', etc. - translate everything to Kannada.",
+        "te": "CRITICAL: Generate EVERYTHING in Telugu (తెలుగు). This includes: story text, quest titles, quest descriptions, choices, item names, greetings, and ALL narrative text. Use ONLY Telugu script. NO English words. NO mixing languages. Translate ALL game terms, proper nouns, technical terms, and game names to Telugu. The ENTIRE response must be 100% in Telugu. Do NOT use English words like 'Welcome', 'Warrior', 'Gilded Scrolls AI', etc. - translate everything to Telugu."
+    }
+    lang_instruction = language_instructions.get(language, language_instructions["en"])
+    
     prompt = f"""
     You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
 
@@ -822,18 +994,25 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
     Genre Themes: {genre_info["themes"]}
     Genre Examples: {genre_info["examples"]}
     
+    CRITICAL LANGUAGE INSTRUCTION:
+    {lang_instruction}
+    
+    {"CRITICAL: If language is Kannada or Telugu, the ENTIRE response must be in that language. NO English words. NO mixing languages. Translate EVERYTHING including game names (like 'Gilded Scrolls AI'), technical terms, proper nouns, class names (Warrior/Mage/Rogue), and all text to the selected language. Every string value in the JSON response must be in the selected language." if language in ["kn", "te"] else ""}
+    
+    {"CRITICAL LOCATION RULE FOR SCI-FI: When generating Sci-Fi quests and stories, ALWAYS use REAL locations from our solar system: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto, the Sun, or the Moon. Do NOT create fictional planet names like 'Xylos-7', 'Kaelus', or made-up locations. Use real planets, moons, and space locations that people know from science. Examples: 'Mars colony', 'Jupiter's moon Europa', 'mining base on the Moon', 'research station on Earth's orbit', 'solar station near the Sun'." if genre == "Sci-Fi" else ""}
+    
     IMPORTANT: Generate a RANDOM and VARIED {genre} story scenario each time. Do NOT repeat the same story. Be creative and use DIFFERENT scenarios from the examples above. Vary the themes, situations, and challenges every time!
     
     CRITICAL FLOW: Quest FIRST → Story SECOND
     
-    1. A warm, personalized greeting (1-2 sentences) that welcomes {player.name} the {player.class_name}.
-    2. Generate a starting quest FIRST. Create a RANDOM, interesting {genre} quest that fits the genre themes. The quest should be varied and different each time. Examples of quest types: {genre_info["examples"]}. Make it unique!
-    3. Generate an opening story scene (MAX 2-3 SHORT sentences, use simple English words) that INTRODUCES and ALIGNS WITH the quest you just created. The story should set up the quest situation/problem. If the quest is about protecting a village, the story should introduce the village and the threat. If the quest is about investigating strange lights, the story should mention the strange lights. The story MUST match the quest exactly because it's created FROM the quest.
+    1. A warm, personalized greeting (1-2 sentences) that welcomes {player.name} the {player.class_name}. {"CRITICAL: If language is Kannada/Telugu, translate class name (Warrior/Mage/Rogue) and use ONLY that language - NO English words." if language in ["kn", "te"] else ""}
+    2. Generate a starting quest FIRST. Create a RANDOM, interesting {genre} quest that fits the genre themes. The quest should be varied and different each time. Examples of quest types: {genre_info["examples"]}. Make it unique! {"CRITICAL: If language is Kannada/Telugu, quest title and description MUST be in that language - NO English words." if language in ["kn", "te"] else ""}
+    3. Generate an opening story scene (MAX 2-3 SHORT sentences, use simple words) that INTRODUCES and ALIGNS WITH the quest you just created. {"CRITICAL: If language is Kannada/Telugu, use ONLY that language - NO English words." if language in ["kn", "te"] else ""} The story should set up the quest situation/problem. If the quest is about protecting a village, the story should introduce the village and the threat. If the quest is about investigating strange lights, the story should mention the strange lights. The story MUST match the quest exactly because it's created FROM the quest.
     4. Initial loot/items appropriate for a level {player.level} {player.class_name} in a {genre} setting (6-8 items). 
        CRITICAL: Items MUST match the {genre} theme. Use ONLY {genre}-appropriate items:
        {genre_info["items"]}
        Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, etc.
-    5. EXACTLY 3 distinct and meaningful choices for the player (keep choice text short, 3-5 words each).
+    5. EXACTLY 3 distinct and meaningful choices for the player (keep choice text short, 3-5 words each). {"CRITICAL: If language is Kannada/Telugu, all choices MUST be in that language - translate all action words to Kannada/Telugu." if language in ["kn", "te"] else ""}
     
     The quest is created FIRST, then the story introduces that quest. They will be in perfect sync because the story is based on the quest.
 
@@ -842,8 +1021,8 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
       "greeting": "A warm, personalized greeting welcoming {player.name} the {player.class_name}",
       "quest": {{
         "id": "quest_start_1",
-        "title": "Quest Title",
-        "description": "Detailed quest description and objectives",
+        "title": "Quest Title" {"(MUST be in " + language + " if language is Kannada/Telugu - NO English words)" if language in ["kn", "te"] else ""},
+        "description": "Detailed quest description and objectives" {"(MUST be in " + language + " if language is Kannada/Telugu - NO English words)" if language in ["kn", "te"] else ""},
         "type": "main",
         "objectives": [{{"text": "Objective 1", "completed": false}}],
         "rewards": {{"xp": 100, "gold": 50, "items": []}}
@@ -856,12 +1035,14 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
         {{"id": "item_5", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}},
         {{"id": "item_6", "name": "{genre}-appropriate item name", "type": "weapon/potion/etc", "effect": "Effect description", "quantity": 1}}
       ] // Generate 6-8 items that match the {genre} theme. Examples: {genre_info["items"]}. Use genre-appropriate names and types. Prioritize weapons and combat gear.
-      "story": "SHORT opening narrative (MAX 2-3 sentences, use simple English). Greet the player, introduce the quest situation (the story MUST match the quest title and description exactly), describe the scene briefly, and mention the starting items. The story should set up the quest that was just created.",
-      "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"]
+      "story": "SHORT opening narrative (MAX 2-3 sentences, use simple words). Greet the player, introduce the quest situation (the story MUST match the quest title and description exactly), describe the scene briefly, and mention the starting items. The story should set up the quest that was just created." {"CRITICAL: If language is Kannada/Telugu, this MUST be 100% in that language - NO English words." if language in ["kn", "te"] else ""},
+      "choices": ["Choice 1 text", "Choice 2 text", "Choice 3 text"] {"CRITICAL: If language is Kannada/Telugu, all choices MUST be in that language - NO English words." if language in ["kn", "te"] else ""}
     }}
 
     CRITICAL Instructions:
-    -   Keep ALL text SHORT and SIMPLE. Use easy English words that a child could understand.
+    -   LANGUAGE: {lang_instruction}
+    {"-   STRICT LANGUAGE RULE: If generating in Kannada or Telugu, EVERY word must be in that language. NO English. Translate game names, class names, and all terms." if language in ["kn", "te"] else ""}
+    -   Keep ALL text SHORT and SIMPLE. Use easy words that a child could understand.
     -   Story must be MAX 2-3 sentences. NO long paragraphs.
     -   Use simple words: "go" not "proceed", "see" not "observe", "big" not "enormous".
     -   Start with a warm greeting (1-2 sentences) mentioning player's name and class.
@@ -880,7 +1061,7 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
             raise HTTPException(status_code=503, detail="Gemini AI model not configured. Please check GEMINI_API_KEY and available models.")
         
         try:
-            response = await model.generate_content_async(prompt)
+            response = await model.generate_content_async(prompt, generation_config=fast_generation_config)
         except Exception as model_error:
             error_str = str(model_error)
             logger.error(f"Model API error (using '{selected_model_name}'): {error_str}")
@@ -895,10 +1076,41 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
         if not response.candidates:
             raise HTTPException(status_code=500, detail="AI failed to generate initial content.")
         
-        if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
-            ai_response_text = response.candidates[0].content.parts[0].text
-        else:
-            ai_response_text = getattr(response, 'text', '')
+        # Safely extract text from response - handle different response structures
+        ai_response_text = ''
+        try:
+            if hasattr(response.candidates[0], 'content') and response.candidates[0].content:
+                if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
+                    # Extract text from all parts and join them
+                    text_parts = []
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            text_parts.append(part.text)
+                    if text_parts:
+                        ai_response_text = ''.join(text_parts)
+        except (AttributeError, IndexError, TypeError) as e:
+            logger.warning(f"Error extracting text from response parts: {e}")
+        
+        # Fallback: try alternative extraction methods (only if parts extraction failed)
+        if not ai_response_text:
+            try:
+                # Try to get text from response using different methods
+                # Check if response has a text method (not property)
+                if hasattr(response, 'text') and callable(getattr(response, 'text', None)):
+                    try:
+                        ai_response_text = response.text()
+                    except:
+                        pass
+                # Try accessing as property (may fail for complex responses, so we catch it)
+                elif hasattr(response, 'text'):
+                    try:
+                        ai_response_text = getattr(response, 'text', '')
+                    except Exception as e:
+                        logger.warning(f"Error accessing response.text property: {e}")
+                        ai_response_text = ''
+            except Exception as e:
+                logger.warning(f"Error in fallback text extraction: {e}")
+                ai_response_text = ''
 
         if not ai_response_text:
             raise HTTPException(status_code=500, detail="AI response was empty or blocked.")
@@ -952,7 +1164,114 @@ async def generate_initial_loot_and_quest(player: Player, genre: str) -> Dict[st
             "choices": ["Explore the left corridor", "Investigate the center passage", "Take the right pathway"]
         }
 
-async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None, active_quest: Optional[Dict[str, Any]] = None, current_location: Optional[str] = None) -> Dict[str, Any]:
+async def pregenerate_story_branches(
+    player: Player,
+    genre: str,
+    previous_events: List[StoryEvent],
+    current_story_response: Dict[str, Any],
+    game_state: Dict[str, Any],
+    multiplayer: Optional[Dict[str, Any]],
+    active_quest: Optional[Dict[str, Any]],
+    current_location: Optional[str],
+    language: str
+) -> None:
+    """Pre-generate story responses for all choice options in the background."""
+    try:
+        # Skip pre-generation for multiplayer (too complex with merged stories)
+        if multiplayer is not None:
+            logger.debug("Skipping pre-generation for multiplayer session")
+            return
+        
+        # Skip pre-generation if in final phase (puzzle phase, no more choices)
+        is_final_phase = game_state.get("isFinalPhase", False)
+        if is_final_phase:
+            logger.debug("Skipping pre-generation for final phase")
+            return
+        
+        # Get choices from current story response
+        choices = current_story_response.get("choices", [])
+        if not choices or len(choices) < 3:
+            logger.debug("Not enough choices for pre-generation")
+            return
+        
+        # Get player ID
+        player_id = str(player.name)  # Use player name as ID
+        
+        # Get current turn count and predict next turn
+        current_turn = game_state.get("turnCount", 0)
+        next_turn = current_turn + 1
+        
+        # Cleanup cache periodically
+        cleanup_cache()
+        
+        # Pre-generate for each choice
+        for choice_index, choice_text in enumerate(choices[:3]):  # Only pre-generate for first 3 choices
+            try:
+                # Predict next game state
+                predicted_game_state = game_state.copy()
+                predicted_game_state["turnCount"] = next_turn
+                
+                # Predict story phase changes based on choice
+                choice_lower = choice_text.lower() if choice_text else ""
+                if "attack" in choice_lower:
+                    predicted_game_state["storyPhase"] = "danger"
+                elif any(word in choice_lower for word in ["hide", "run", "flee", "escape"]):
+                    predicted_game_state["storyPhase"] = "exploration"
+                    predicted_game_state["combatEscapes"] = predicted_game_state.get("combatEscapes", 0) + 1
+                
+                # Update previous events to include current story
+                updated_previous_events = previous_events.copy()
+                if current_story_response.get("story"):
+                    # Create StoryEvent with required fields (id and timestamp)
+                    story_id = secrets.token_hex(8)
+                    timestamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    updated_previous_events.append(StoryEvent(
+                        id=story_id,
+                        text=current_story_response.get("story"),
+                        timestamp=timestamp,
+                        type="story"
+                    ))
+                
+                # Generate story for this choice
+                logger.debug(f"Pre-generating story for choice {choice_index}: {choice_text[:50]}...")
+                pregenerated_result = await generate_story_with_ai(
+                    player=player,
+                    genre=genre,
+                    previous_events=updated_previous_events,
+                    choice=choice_text,
+                    game_state=predicted_game_state,
+                    multiplayer=None,  # No multiplayer for pre-generation
+                    active_quest=active_quest,
+                    current_location=current_location,
+                    language=language
+                )
+                
+                # Store in cache using text-based key (so lookup will work)
+                cache_key = get_cache_key(player_id, next_turn, choice_text)
+                pregenerated_stories_cache[cache_key] = pregenerated_result
+                cache_metadata[cache_key] = {
+                    "timestamp": time.time(),
+                    "player_id": player_id,
+                    "turn_count": next_turn,
+                    "choice_index": choice_index,
+                    "choice_text": choice_text,
+                    "normalized_choice": normalize_choice_text(choice_text)
+                }
+                
+                logger.info(f"Pre-generated and cached: player={player_id}, turn={next_turn}, choice_index={choice_index}, key={cache_key[:80]}...")
+                
+            except Exception as e:
+                # Log error but don't fail - pre-generation is best effort
+                logger.warning(f"Failed to pre-generate story for choice {choice_index} ({choice_text[:50]}...): {e}")
+                continue
+        
+        logger.info(f"Completed pre-generation for {len(choices[:3])} choices")
+        
+    except Exception as e:
+        # Log error but don't fail - pre-generation is best effort
+        logger.warning(f"Error in pre-generation: {e}")
+
+async def generate_story_with_ai(player: Player, genre: str, previous_events: List[StoryEvent], choice: Optional[str], game_state: Optional[Dict[str, Any]] = None, multiplayer: Optional[Dict[str, Any]] = None, active_quest: Optional[Dict[str, Any]] = None, current_location: Optional[str] = None, language: str = "en") -> Dict[str, Any]:
     """Generate dynamic story based on player choices using Gemini AI."""
     if not model:
         raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
@@ -1072,6 +1391,12 @@ CRITICAL INSTRUCTIONS:
 After this, the story phase should return to exploration and continue toward the final puzzle.
 """
             story_phase = "exploration"  # Return to exploration phase after avoiding danger
+        else:
+            # Choice doesn't match attack or hide/run - treat as exploration choice
+            phase_instruction = "Continue the story narrative SHORTLY (MAX 2-3 sentences, simple English) based on the player's choice. The danger phase is still active, but the player made a different choice."
+    elif story_phase == "danger" and not choice:
+        # In danger phase but no choice provided - continue with danger description
+        phase_instruction = "A dangerous situation or monster may appear now, but keep it RARE. Describe the threat SHORTLY (MAX 2-3 sentences, simple English) but DO NOT automatically start combat. Give the player SHORT options like 'Attack', 'Run', 'Hide'. Remember: combat should be MINIMAL in this adventure."
     elif is_after_combat:
         # Continue story after combat - STRICTLY NO MORE COMBAT, focus on quest
         quest_context = ""
@@ -1108,11 +1433,11 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     # Genre-specific themes and items for story continuation
     genre_themes_cont = {
         "Fantasy": {
-            "theme": "Use medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles. Keep the Fantasy theme consistent.",
+            "theme": "Use medieval settings, magic, dragons, quests, kingdoms, enchanted forests, wizards, knights, ancient artifacts, mystical creatures, dungeons, castles, villages, lost people, kidnapped children, mysterious disappearances. Vary the themes - include lost villagers, kidnapped children by creatures, missing explorers, stolen livestock, missing merchants, and other varied scenarios. Do NOT always use 'cursed' themes - be creative and diverse. Keep the Fantasy theme consistent.",
             "items": "Medieval weapons and items: Sword, Shield, Bow, Mace, Dagger, Staff, Armor, Helmet, Potion, Scroll, Enchanted Ring, Magic Wand, Crossbow, Axe, Spear, Chainmail, Gauntlets, Boots"
         },
         "Sci-Fi": {
-            "theme": "Use space, technology, aliens, futuristic settings, space stations, planets, robots, cybernetics, space travel, advanced weapons, holograms, space colonies. Keep the Sci-Fi theme consistent.",
+            "theme": "Use space, technology, aliens, futuristic settings, space stations, planets, robots, cybernetics, space travel, advanced weapons, holograms, space colonies. CRITICAL: For locations, ALWAYS use REAL locations from our solar system: Mercury, Venus, Earth, Mars, Jupiter, Saturn, Uranus, Neptune, Pluto, the Sun, or the Moon. Do NOT create fictional planet names like 'Xylos-7' or 'Kaelus'. Use real planets, moons, and space locations. Keep the Sci-Fi theme consistent.",
             "items": "Modern weapons like PUBG/Free Fire: Assault Rifle, Pistol, Grenade, Bomb, Sniper Rifle, SMG, Shotgun, Energy Rifle, Plasma Gun, Laser Pistol, Frag Grenade, Smoke Grenade, Body Armor, Helmet, Medkit, Energy Shield, Tech Scanner, Cybernetic Implant"
         },
         "Mystery": {
@@ -1128,6 +1453,14 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     genre_cont_info = genre_themes_cont.get(genre, genre_themes_cont["Fantasy"])
     genre_theme_instruction = genre_cont_info["theme"]
     genre_items_instruction = genre_cont_info["items"]
+    
+    # Language instruction mapping
+    language_instructions = {
+        "en": "Generate the story, quest descriptions, and choices in English. Use simple, clear English words.",
+        "kn": "CRITICAL: Generate EVERYTHING in Kannada (ಕನ್ನಡ). This includes: story text, quest titles, quest descriptions, choices, item names, greetings, and ALL narrative text. Use ONLY Kannada script. NO English words. NO mixing languages. Translate ALL game terms, proper nouns, technical terms, and game names to Kannada. The ENTIRE response must be 100% in Kannada. Do NOT use English words like 'Welcome', 'Warrior', 'Gilded Scrolls AI', etc. - translate everything to Kannada.",
+        "te": "CRITICAL: Generate EVERYTHING in Telugu (తెలుగు). This includes: story text, quest titles, quest descriptions, choices, item names, greetings, and ALL narrative text. Use ONLY Telugu script. NO English words. NO mixing languages. Translate ALL game terms, proper nouns, technical terms, and game names to Telugu. The ENTIRE response must be 100% in Telugu. Do NOT use English words like 'Welcome', 'Warrior', 'Gilded Scrolls AI', etc. - translate everything to Telugu."
+    }
+    lang_instruction = language_instructions.get(language, language_instructions["en"])
     
     prompt = f"""
     You are a {genre} Dungeon Master for a text-based RPG game called Gilded Scrolls AI.
@@ -1152,6 +1485,11 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     GENRE: {genre}
     {genre_theme_instruction}
     
+    CRITICAL LANGUAGE INSTRUCTION:
+    {lang_instruction}
+    
+    {"CRITICAL: If language is Kannada or Telugu, the ENTIRE response must be in that language. NO English words. NO mixing languages. Translate EVERYTHING including game names, technical terms, proper nouns, class names, and all text to the selected language. Every string value in the JSON response must be in the selected language." if language in ["kn", "te"] else ""}
+    
     Active Quest:
     {f"Title: {active_quest.get('title', 'None')}\nDescription: {active_quest.get('description', 'None')}\nObjectives: {active_quest.get('objectives', [])}" if active_quest else "No active quest"}
     
@@ -1169,10 +1507,10 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     {phase_instruction}
 
     Generate the next part of the story (KEEP IT SHORT AND SIMPLE):
-    1.  Write a SHORT narrative continuation (MAX 2-3 sentences, use simple English words) based on the phase instruction above.
+    1.  Write a SHORT narrative continuation (MAX 2-3 sentences, use simple words) based on the phase instruction above. LANGUAGE: {lang_instruction} {"CRITICAL: If language is Kannada/Telugu, use ONLY that language - NO English words." if language in ["kn", "te"] else ""}
     2.  CRITICAL: If there is an active quest, the story MUST directly relate to and progress that quest. The narrative MUST match the quest title and description exactly. Do NOT create unrelated storylines.
-    3.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away").
-    4.  CRITICAL: If a creature/enemy appears in the story, you MUST include "Attack" as one of the 3 choices. The other choices can be "Run", "Hide", "Investigate", etc.
+    3.  Provide exactly 3 distinct and meaningful choices (keep each choice SHORT, 3-5 words: "Go left", "Fight", "Run away"). {"CRITICAL: If language is Kannada/Telugu, all choices MUST be in that language - translate 'Go left', 'Fight', 'Run away', 'Attack', 'Hide', 'Investigate' etc. to Kannada/Telugu." if language in ["kn", "te"] else ""}
+    4.  CRITICAL: If a creature/enemy appears in the story, you MUST include {"'ದಾಳಿ' (Attack in Kannada)" if language == "kn" else "'దాడి' (Attack in Telugu)" if language == "te" else '"Attack"'} as one of the 3 choices. The other choices can be {"'ಓಡು' (Run), 'ಮರೆ' (Hide), 'ವಿಚಾರಣೆ' (Investigate)" if language == "kn" else "'పరుగు' (Run), 'దాచు' (Hide), 'విచారణ' (Investigate)" if language == "te" else '"Run", "Hide", "Investigate"'} etc.
     5.  When including a dangerEncounter with an enemy, set shouldStartCombat to true. The enemy will be used for weapon selection combat (not turn-based combat panel).
     6.  If player chose to hide/run/escape from danger, continue the story focusing on quest progression - NO MORE COMBAT OR THREATS.
     7.  Only include items if the player finds them in this specific moment. CRITICAL: Items MUST match the {genre} theme. Use ONLY {genre}-appropriate items: {genre_items_instruction}. Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, Mystery items for Mystery, Mythical items for Mythical.
@@ -1186,8 +1524,8 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
 
     Format your response STRICTLY as JSON:
     {{
-      "story": "Your SHORT narrative here (MAX 2-3 sentences, simple English)...",
-      "choices": ["Short choice 1", "Short choice 2", "Short choice 3"],
+      "story": "Your SHORT narrative here (MAX 2-3 sentences, simple words)..." {"CRITICAL: If language is Kannada/Telugu, this MUST be 100% in that language - NO English words." if language in ["kn", "te"] else ""},
+      "choices": ["Short choice 1", "Short choice 2", "Short choice 3"] {"CRITICAL: If language is Kannada/Telugu, all choices MUST be in that language - NO English words." if language in ["kn", "te"] else ""},
       "dangerEncounter": {{
         "description": "Description of the threat",
         "enemy": {{ "id": "enemy_goblin_1", "name": "Goblin Scout", "health": 30, "maxHealth": 30, "attack": 8, "defense": 4 }}
@@ -1208,8 +1546,9 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
     }}
 
     Important Notes:
+    {"-   CRITICAL LANGUAGE RULE: If language is Kannada or Telugu, EVERY word in the response must be in that language. NO English words. NO mixing languages. Translate all game terms, class names, item names, and narrative text to the selected language." if language in ["kn", "te"] else ""}
     -   CRITICAL: If there is an active quest, the story narrative MUST match the quest title and description exactly. The story MUST be about progressing that specific quest, not unrelated content.
-    -   CRITICAL: Items MUST be genre-appropriate. For {genre}, use ONLY: {genre_items_instruction}. Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, Mystery items for Mystery, Mythical items for Mythical.
+    -   CRITICAL: Items MUST be genre-appropriate. For {genre}, use ONLY: {genre_items_instruction}. Do NOT mix genres - Fantasy items for Fantasy, Sci-Fi items for Sci-Fi, Mystery items for Mystery, Mythical items for Mythical. {"CRITICAL: If language is Kannada/Telugu, item names MUST be in that language - NO English." if language in ["kn", "te"] else ""}
     -   Maintain narrative consistency.
     -   Keep the difficulty appropriate for a level {player.level} {player.class_name} on floor {player.dungeonLevel}.
     -   Higher floors should have stronger enemies and better rewards. Scale enemy stats by: baseStats * (1 + floorLevel * 0.3)
@@ -1224,7 +1563,7 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
             raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
         
         try:
-            response = await model.generate_content_async(prompt)
+            response = await model.generate_content_async(prompt, generation_config=fast_generation_config)
         except Exception as model_error:
             error_str = str(model_error)
             logger.error(f"Model API error in story generation (using '{selected_model_name}'): {error_str}")
@@ -1239,12 +1578,39 @@ CRITICAL INSTRUCTIONS FOR POST-COMBAT STORY:
         if not response.candidates:
              raise HTTPException(status_code=500, detail="AI failed to generate a response.")
 
-        # Accessing the text content safely
-        if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
-            ai_response_text = response.candidates[0].content.parts[0].text
-        else:
-            # Fallback or different structure handling if necessary
-             ai_response_text = getattr(response, 'text', '') # Attempt to get text attribute directly
+        # Safely extract text from response - handle different response structures
+        ai_response_text = ''
+        try:
+            if hasattr(response.candidates[0], 'content') and response.candidates[0].content:
+                if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
+                    # Extract text from all parts and join them
+                    text_parts = []
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            text_parts.append(part.text)
+                    if text_parts:
+                        ai_response_text = ''.join(text_parts)
+        except (AttributeError, IndexError, TypeError) as e:
+            logger.warning(f"Error extracting text from response parts: {e}")
+        
+        # Fallback: try alternative extraction methods (only if parts extraction failed)
+        if not ai_response_text:
+            try:
+                # Try to get text from response using different methods
+                if hasattr(response, 'text') and callable(getattr(response, 'text', None)):
+                    try:
+                        ai_response_text = response.text()
+                    except:
+                        pass
+                elif hasattr(response, 'text'):
+                    try:
+                        ai_response_text = getattr(response, 'text', '')
+                    except Exception as e:
+                        logger.warning(f"Error accessing response.text property: {e}")
+                        ai_response_text = ''
+            except Exception as e:
+                logger.warning(f"Error in fallback text extraction: {e}")
+                ai_response_text = ''
 
         if not ai_response_text:
              raise HTTPException(status_code=500, detail="AI response was empty or blocked.")
@@ -1381,7 +1747,7 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             raise HTTPException(status_code=503, detail="Gemini AI model not configured.")
         
         try:
-            response = await model.generate_content_async(prompt)
+            response = await model.generate_content_async(prompt, generation_config=fast_generation_config)
         except Exception as model_error:
             error_str = str(model_error)
             logger.error(f"Model API error in combat (using '{selected_model_name}'): {error_str}")
@@ -1397,10 +1763,41 @@ async def process_combat_with_ai(player: Player, enemy: Enemy, action: str, item
             raise HTTPException(status_code=500, detail="AI failed to generate a combat response.")
 
         # Accessing the text content safely
-        if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
-            ai_response_text = response.candidates[0].content.parts[0].text
-        else:
-            ai_response_text = getattr(response, 'text', '')
+        # Safely extract text from response - handle different response structures
+        ai_response_text = ''
+        try:
+            if hasattr(response.candidates[0], 'content') and response.candidates[0].content:
+                if hasattr(response.candidates[0].content, 'parts') and response.candidates[0].content.parts:
+                    # Extract text from all parts and join them
+                    text_parts = []
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'text') and part.text:
+                            text_parts.append(part.text)
+                    if text_parts:
+                        ai_response_text = ''.join(text_parts)
+        except (AttributeError, IndexError, TypeError) as e:
+            logger.warning(f"Error extracting text from response parts: {e}")
+        
+        # Fallback: try alternative extraction methods (only if parts extraction failed)
+        if not ai_response_text:
+            try:
+                # Try to get text from response using different methods
+                # Check if response has a text method (not property)
+                if hasattr(response, 'text') and callable(getattr(response, 'text', None)):
+                    try:
+                        ai_response_text = response.text()
+                    except:
+                        pass
+                # Try accessing as property (may fail for complex responses, so we catch it)
+                elif hasattr(response, 'text'):
+                    try:
+                        ai_response_text = getattr(response, 'text', '')
+                    except Exception as e:
+                        logger.warning(f"Error accessing response.text property: {e}")
+                        ai_response_text = ''
+            except Exception as e:
+                logger.warning(f"Error in fallback text extraction: {e}")
+                ai_response_text = ''
 
         if not ai_response_text:
             raise HTTPException(status_code=500, detail="AI combat response was empty or blocked.")
@@ -1674,7 +2071,8 @@ async def api_initialize_game(request: StoryRequest):
     try:
         result = await generate_initial_loot_and_quest(
             request.player,
-            request.genre
+            request.genre,
+            request.language or "en"
         )
         # Ensure all required fields are present
         if "choices" not in result or not result.get("choices"):
@@ -1690,6 +2088,33 @@ async def api_initialize_game(request: StoryRequest):
                 "objectives": [],
                 "rewards": {"xp": 100, "gold": 50, "items": []}
             }
+        
+        # Trigger pre-generation for initial story choices
+        if result.get("choices") and len(result.get("choices", [])) >= 3:
+            # Create initial game state for pre-generation
+            initial_game_state = {
+                "turnCount": 0,
+                "storyPhase": "exploration",
+                "combatEncounters": 0,
+                "combatEscapes": 0,
+                "isAfterCombat": False,
+                "isFinalPhase": False
+            }
+            
+            # Trigger pre-generation in background
+            asyncio.create_task(pregenerate_story_branches(
+                player=request.player,
+                genre=request.genre,
+                previous_events=request.previousEvents or [],
+                current_story_response=result,
+                game_state=initial_game_state,
+                multiplayer=request.multiplayer,
+                active_quest=request.activeQuest,
+                current_location=request.currentLocation,
+                language=request.language or "en"
+            ))
+            logger.info(f"Triggered pre-generation for initial story: player={request.player.name}")
+        
         return result
     except Exception as e:
         logger.error(f"Error in /api/initialize endpoint: {e}")
@@ -1716,17 +2141,99 @@ async def api_initialize_game(request: StoryRequest):
 async def api_generate_story(request: StoryRequest):
     """Endpoint to generate the next part of the story."""
     try:
-        # Pydantic automatically validates the request body against StoryRequest
-        result = await generate_story_with_ai(
-            request.player,
-            request.genre,
-            request.previousEvents,
-            request.choice,
-            request.gameState,
-            request.multiplayer,
-            request.activeQuest,
-            request.currentLocation
-        )
+        # Cleanup cache periodically
+        cleanup_cache()
+        
+        # Check cache first for instant response
+        player_id = str(request.player.name)
+        current_turn = request.gameState.get("turnCount", 0) if request.gameState else 0
+        choice_text = request.choice or ""
+        
+        # Frontend increments turn_count before sending request
+        # Pre-generation: at turn N, generates stories for turn N+1, stores with key using N+1
+        # Lookup: request has turn_count = N+1 (already incremented), look up with N+1
+        # So lookup_turn = current_turn (which matches pre-generation's next_turn)
+        lookup_turn = current_turn
+        
+        # Try to find cached response with multiple fallback strategies
+        cached_response = find_cached_response(player_id, lookup_turn, choice_text)
+        
+        if cached_response:
+            logger.info(f"✓ INSTANT RESPONSE from cache: player={player_id}, turn={current_turn}, choice='{choice_text[:50]}...'")
+            result = cached_response.copy()  # Return cached response immediately
+            
+            # Trigger background pre-generation for the new choices (if any)
+            if result.get("choices") and len(result.get("choices", [])) >= 3:
+                # Check if we need to pre-generate (not in final phase, not multiplayer)
+                is_final_phase = request.gameState.get("isFinalPhase", False) if request.gameState else False
+                is_multiplayer = request.multiplayer is not None
+                
+                if not is_final_phase and not is_multiplayer:
+                    # Update game state for pre-generation (use current turn, will be incremented in pregen function)
+                    pregen_game_state = (request.gameState or {}).copy()
+                    pregen_game_state["turnCount"] = current_turn
+                    
+                    # Trigger pre-generation in background (fire and forget)
+                    asyncio.create_task(pregenerate_story_branches(
+                        player=request.player,
+                        genre=request.genre,
+                        previous_events=request.previousEvents,
+                        current_story_response=result,
+                        game_state=pregen_game_state,
+                        multiplayer=request.multiplayer,
+                        active_quest=request.activeQuest,
+                        current_location=request.currentLocation,
+                        language=request.language or "en"
+                    ))
+                    logger.info(f"Triggered pre-generation for next turn (from cache hit): player={player_id}, current_turn={current_turn}")
+        else:
+            # Cache miss - generate normally
+            logger.info(f"✗ Cache MISS - generating story: player={player_id}, turn={current_turn}, choice='{choice_text[:50]}...'")
+            
+            # DON'T invalidate cache on miss - only invalidate old entries after new generation
+            # This keeps pre-generated entries available even if there's a miss
+            
+            # Pydantic automatically validates the request body against StoryRequest
+            result = await generate_story_with_ai(
+                request.player,
+                request.genre,
+                request.previousEvents,
+                request.choice,
+                request.gameState,
+                request.multiplayer,
+                request.activeQuest,
+                request.currentLocation,
+                request.language or "en"
+            )
+            
+            # After generating new story, invalidate OLD cache entries (but keep current turn)
+            # This ensures we don't use stale cache but also don't remove entries that might be used
+            invalidate_player_cache(player_id, keep_turn=current_turn)
+            
+            # Trigger background pre-generation for the new choices
+            if result.get("choices") and len(result.get("choices", [])) >= 3:
+                # Check if we should pre-generate (not in final phase, not multiplayer)
+                is_final_phase = request.gameState.get("isFinalPhase", False) if request.gameState else False
+                is_multiplayer = request.multiplayer is not None
+                
+                if not is_final_phase and not is_multiplayer:
+                    # Update game state for pre-generation (increment turn count)
+                    pregen_game_state = (request.gameState or {}).copy()
+                    pregen_game_state["turnCount"] = current_turn
+                    
+                    # Trigger pre-generation in background (fire and forget)
+                    asyncio.create_task(pregenerate_story_branches(
+                        player=request.player,
+                        genre=request.genre,
+                        previous_events=request.previousEvents,
+                        current_story_response=result,
+                        game_state=pregen_game_state,
+                        multiplayer=request.multiplayer,
+                        active_quest=request.activeQuest,
+                        current_location=request.currentLocation,
+                        language=request.language or "en"
+                    ))
+                    logger.info(f"Triggered pre-generation for next turn: player={player_id}, current_turn={current_turn}")
         
         # CRITICAL: If this is after combat, STRICTLY prevent any new combat encounters
         is_after_combat = request.gameState.get("isAfterCombat", False) if request.gameState else False

@@ -25,6 +25,7 @@ interface StoryRequest {
   activeQuest?: any;
   badgeEvents?: string[];
   currentLocation?: string;
+  language?: string;
 }
 
 interface StoryResponse {

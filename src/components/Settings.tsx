@@ -9,13 +9,12 @@ import { Slider } from '@/components/ui/slider';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { ArrowLeft, Volume2, Music, Languages, Accessibility, Save, Trash2, Download, Upload, Type, Eye, Move } from 'lucide-react';
+import { ArrowLeft, Volume2, Music, Accessibility, Save, Trash2, Download, Upload, Type, Eye, Move } from 'lucide-react';
 import { api } from '@/services/api';
 import { toast } from 'sonner';
 
 const Settings = () => {
   const {
-    language,
     textSpeed,
     soundEnabled,
     musicEnabled,
@@ -24,7 +23,6 @@ const Settings = () => {
     player,
     gameState,
     authUser,
-    currentScreen,
     currentStory,
   } = useGameStore();
   
@@ -143,11 +141,12 @@ const Settings = () => {
             variant="ghost"
             onClick={() => {
               // Go back to the screen we came from
-              // Only go to game if we have an active game session (player, initialized, and current story)
-              if (player && gameState.isInitialized && currentStory) {
+              // Go to game if we have an active game session (player exists and game is initialized)
+              // currentStory check removed as it might not always be set immediately
+              if (player && gameState?.isInitialized) {
                 setScreen('game');
               } else {
-                // Always go back to intro if we came from intro or if no active game
+                // Go back to intro if we came from intro or if no active game
                 setScreen('intro');
               }
             }}
@@ -170,26 +169,6 @@ const Settings = () => {
 
             <TabsContent value="general">
               <Card className="panel-glow bg-card/95 border-2 border-primary/30 p-8 space-y-8">
-                {/* Language */}
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    <Languages className="w-6 h-6 text-primary" />
-                    <Label className="text-xl font-elegant">Language</Label>
-                  </div>
-                  <div className="flex gap-3">
-                    {(['English', 'Kannada', 'Telugu'] as const).map((lang) => (
-                      <Button
-                        key={lang}
-                        variant={language === lang ? 'default' : 'outline'}
-                        onClick={() => updateSettings({ language: lang })}
-                        className="flex-1"
-                      >
-                        {lang}
-                      </Button>
-                    ))}
-                  </div>
-                </div>
-
                 {/* Text Speed */}
                 <div className="space-y-4">
                   <Label className="text-xl font-elegant">Text Speed</Label>

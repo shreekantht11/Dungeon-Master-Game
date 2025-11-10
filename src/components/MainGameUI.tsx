@@ -74,6 +74,7 @@ import {
 } from 'lucide-react';
 
 const MainGameUI = () => {
+  const { i18n, t } = useTranslation();
   const {
     player,
     currentStory,
@@ -106,7 +107,6 @@ const MainGameUI = () => {
     addCameo,
   } = useGameStore();
 
-  const { t } = useTranslation();
   const [displayedText, setDisplayedText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [showAdventureLog, setShowAdventureLog] = useState(false);
@@ -175,6 +175,7 @@ const MainGameUI = () => {
           genre: genre || 'Fantasy',
           previousEvents: [],
           choice: undefined,
+          language: i18n.language || 'en', // Pass current language from i18n
         };
         
         const res = await api.initializeGame(request as any);
@@ -586,6 +587,7 @@ const MainGameUI = () => {
         },
         activeQuest: activeQuest,
         currentLocation: currentLocation,
+        language: i18n.language || 'en', // Pass current language from i18n
       };
 
       // Call backend
