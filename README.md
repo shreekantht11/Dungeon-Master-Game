@@ -2,6 +2,20 @@
 
 An immersive, AI-powered text-based adventure game with dynamic story generation, turn-based combat, and character progression. Built with React, TypeScript, and powered by Google Gemini AI.
 
+## 🧭 How to Play
+
+1. **Create Your Hero** – Pick a name, class (Warrior, Mage, or Rogue), gender, and preferred story language (English, Kannada, or Telugu).
+2. **Choose a Genre** – Launch into Fantasy, Sci-Fi, Mystery, or Mythical adventures. Sci-Fi stories stay grounded in real solar system locations.
+3. **Follow the Story** – Read the AI-generated narrative and pick from three contextual choices. The game pre-generates upcoming branches so responses feel instant.
+4. **Face Challenges** – Engage in turn-based combat, solve puzzles, and tackle quests. Use weapons, abilities, and items to survive.
+5. **Progress & Collect** – Level up, unlock badges, gather loot, craft gear, and explore new locations via the world map.
+6. **Save & Share** – Auto-saves keep progress; cloud saves unlock when you sign in with Google. Share highlights or invite friends through the cameo system.
+
+> **Want the full walkthrough?** See the player guides below:
+>
+> - [Game Details Part 1](./game-details1.md) – Getting started, UI walkthroughs, character/genre/story/combat basics.
+> - [Game Details Part 2](./game-details2.md) – Advanced systems covering economy, crafting, achievements, progression, social and daily features, tips, and troubleshooting.
+
 ## 🌟 Features
 
 ### ✅ Implemented (Frontend)
@@ -499,6 +513,10 @@ Place audio files in `public/sounds/` and `public/music/`:
 - `potion-drink.mp3` - Healing sound
 - `level-up.mp3` - Level up fanfare
 - `fantasy-adventure.mp3` - Background music
+
+### Player Guides
+- [Game Details Part 1](./game-details1.md) – full walkthrough of onboarding, UI screens, character creation, genres, story flow, combat, inventory, and quests.
+- [Game Details Part 2](./game-details2.md) – deep dive into economy, crafting, world map, achievements, codex, progression, saves, settings, social/daily systems, advanced features, tips, and troubleshooting.
 
 ## 🎮 Game Design Philosophy
 
