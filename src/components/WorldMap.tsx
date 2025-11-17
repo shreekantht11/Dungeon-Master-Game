@@ -29,11 +29,14 @@ const WorldMap = () => {
   const { toast } = useToast();
   const player = useGameStore((state) => state.player);
   const currentLocation = useGameStore((state) => state.currentLocation || 'village');
+  const discoveredLocations = useGameStore((state) => state.discoveredLocations);
   const locationProgress = useGameStore((state) => state.locationProgress);
   const locationStats = useGameStore((state) => state.locationStats);
   const setDungeonLevel = useGameStore((state) => state.setDungeonLevel);
   const setLocationProgress = useGameStore((state) => state.setLocationProgress);
   const updateLocationStats = useGameStore((state) => state.updateLocationStats);
+  const setCurrentLocation = useGameStore((state) => state.setCurrentLocation);
+  const discoverLocation = useGameStore((state) => state.discoverLocation);
   const [showLevelSelector, setShowLevelSelector] = useState(false);
   const [selectedLocation, setSelectedLocation] = useState<Location | null>(null);
   const [showLocationInfo, setShowLocationInfo] = useState<string | null>(null);
@@ -43,66 +46,261 @@ const WorldMap = () => {
       id: 'village',
       name: 'Starting Village',
       description: 'A peaceful village where your journey began',
-      discovered: true,
+      discovered: discoveredLocations.includes('village'),
       unlocked: true,
       level: 1,
-      maxLevel: 3,
+      maxLevel: 1,
       recommendedLevel: 1,
       icon: '🏘️',
-      x: 20,
-      y: 50,
+      x: 10,
+      y: 60,
     },
     {
       id: 'forest',
       name: 'Dark Forest',
       description: 'An ancient forest filled with mysteries',
-      discovered: true,
-      unlocked: true,
-      level: 3,
+      discovered: discoveredLocations.includes('forest'),
+      unlocked: player ? player.level >= 2 : false,
+      level: 2,
       maxLevel: 5,
-      recommendedLevel: 3,
+      recommendedLevel: 2,
       icon: '🌲',
-      x: 40,
-      y: 40,
+      x: 25,
+      y: 45,
     },
     {
       id: 'cave',
       name: 'Crystal Caves',
       description: 'Glowing crystals illuminate these dangerous caverns',
-      discovered: true,
-      unlocked: player ? player.level >= 5 : false,
-      level: 5,
+      discovered: discoveredLocations.includes('cave'),
+      unlocked: player ? player.level >= 3 : false,
+      level: 3,
       maxLevel: 7,
-      recommendedLevel: 5,
+      recommendedLevel: 3,
       icon: '⛰️',
-      x: 60,
-      y: 30,
+      x: 40,
+      y: 35,
     },
     {
       id: 'castle',
       name: 'Abandoned Castle',
       description: 'Once majestic, now haunted ruins',
-      discovered: player ? player.level >= 7 : false,
-      unlocked: player ? player.level >= 7 : false,
-      level: 7,
+      discovered: discoveredLocations.includes('castle'),
+      unlocked: player ? player.level >= 5 : false,
+      level: 5,
       maxLevel: 10,
-      recommendedLevel: 7,
+      recommendedLevel: 5,
       icon: '🏰',
-      x: 75,
-      y: 45,
+      x: 55,
+      y: 50,
     },
     {
       id: 'mountain',
       name: 'Dragon Peak',
       description: 'The highest mountain, home to ancient dragons',
-      discovered: player ? player.level >= 10 : false,
-      unlocked: player ? player.level >= 10 : false,
-      level: 10,
+      discovered: discoveredLocations.includes('mountain'),
+      unlocked: player ? player.level >= 8 : false,
+      level: 8,
       maxLevel: 15,
-      recommendedLevel: 10,
+      recommendedLevel: 8,
       icon: '🗻',
-      x: 85,
+      x: 70,
+      y: 25,
+    },
+    {
+      id: 'port',
+      name: 'Harbor Port',
+      description: 'A bustling port town with ships from distant lands',
+      discovered: discoveredLocations.includes('port'),
+      unlocked: player ? player.level >= 2 : false,
+      level: 2,
+      maxLevel: 1,
+      recommendedLevel: 2,
+      icon: '⚓',
+      x: 5,
+      y: 75,
+    },
+    {
+      id: 'desert',
+      name: 'Scorching Desert',
+      description: 'Endless sands hide ancient secrets and dangers',
+      discovered: discoveredLocations.includes('desert'),
+      unlocked: player ? player.level >= 4 : false,
+      level: 4,
+      maxLevel: 8,
+      recommendedLevel: 4,
+      icon: '🏜️',
+      x: 15,
       y: 20,
+    },
+    {
+      id: 'swamp',
+      name: 'Misty Swamp',
+      description: 'A murky swamp filled with strange creatures',
+      discovered: discoveredLocations.includes('swamp'),
+      unlocked: player ? player.level >= 3 : false,
+      level: 3,
+      maxLevel: 6,
+      recommendedLevel: 3,
+      icon: '🌿',
+      x: 30,
+      y: 70,
+    },
+    {
+      id: 'temple',
+      name: 'Ancient Temple',
+      description: 'A sacred temple with powerful guardians',
+      discovered: discoveredLocations.includes('temple'),
+      unlocked: player ? player.level >= 6 : false,
+      level: 6,
+      maxLevel: 12,
+      recommendedLevel: 6,
+      icon: '🛕',
+      x: 65,
+      y: 60,
+    },
+    {
+      id: 'tower',
+      name: 'Mystic Tower',
+      description: 'A towering structure reaching into the clouds',
+      discovered: discoveredLocations.includes('tower'),
+      unlocked: player ? player.level >= 7 : false,
+      level: 7,
+      maxLevel: 20,
+      recommendedLevel: 7,
+      icon: '🗼',
+      x: 80,
+      y: 50,
+    },
+    {
+      id: 'ruins',
+      name: 'Forgotten Ruins',
+      description: 'Crumbling ruins of an ancient civilization',
+      discovered: discoveredLocations.includes('ruins'),
+      unlocked: player ? player.level >= 4 : false,
+      level: 4,
+      maxLevel: 9,
+      recommendedLevel: 4,
+      icon: '🏛️',
+      x: 45,
+      y: 65,
+    },
+    {
+      id: 'volcano',
+      name: 'Fire Volcano',
+      description: 'An active volcano with molten lava flows',
+      discovered: discoveredLocations.includes('volcano'),
+      unlocked: player ? player.level >= 9 : false,
+      level: 9,
+      maxLevel: 18,
+      recommendedLevel: 9,
+      icon: '🌋',
+      x: 85,
+      y: 40,
+    },
+    {
+      id: 'town',
+      name: 'Merchant Town',
+      description: 'A prosperous trading town with many shops',
+      discovered: discoveredLocations.includes('town'),
+      unlocked: player ? player.level >= 2 : false,
+      level: 2,
+      maxLevel: 1,
+      recommendedLevel: 2,
+      icon: '🏙️',
+      x: 35,
+      y: 55,
+    },
+    {
+      id: 'crypt',
+      name: 'Underground Crypt',
+      description: 'Dark catacombs filled with undead horrors',
+      discovered: discoveredLocations.includes('crypt'),
+      unlocked: player ? player.level >= 5 : false,
+      level: 5,
+      maxLevel: 11,
+      recommendedLevel: 5,
+      icon: '⚰️',
+      x: 50,
+      y: 70,
+    },
+    {
+      id: 'island',
+      name: 'Mysterious Island',
+      description: 'A remote island shrouded in mystery',
+      discovered: discoveredLocations.includes('island'),
+      unlocked: player ? player.level >= 6 : false,
+      level: 6,
+      maxLevel: 13,
+      recommendedLevel: 6,
+      icon: '🏝️',
+      x: 20,
+      y: 85,
+    },
+    {
+      id: 'glacier',
+      name: 'Frozen Glacier',
+      description: 'A vast ice field with freezing temperatures',
+      discovered: discoveredLocations.includes('glacier'),
+      unlocked: player ? player.level >= 7 : false,
+      level: 7,
+      maxLevel: 14,
+      recommendedLevel: 7,
+      icon: '🧊',
+      x: 90,
+      y: 15,
+    },
+    {
+      id: 'jungle',
+      name: 'Dense Jungle',
+      description: 'A thick jungle teeming with wildlife',
+      discovered: discoveredLocations.includes('jungle'),
+      unlocked: player ? player.level >= 3 : false,
+      level: 3,
+      maxLevel: 6,
+      recommendedLevel: 3,
+      icon: '🌴',
+      x: 10,
+      y: 30,
+    },
+    {
+      id: 'fortress',
+      name: 'Iron Fortress',
+      description: 'An impenetrable fortress with strong defenses',
+      discovered: discoveredLocations.includes('fortress'),
+      unlocked: player ? player.level >= 8 : false,
+      level: 8,
+      maxLevel: 16,
+      recommendedLevel: 8,
+      icon: '🏯',
+      x: 60,
+      y: 15,
+    },
+    {
+      id: 'library',
+      name: 'Grand Library',
+      description: 'A vast library containing ancient knowledge',
+      discovered: discoveredLocations.includes('library'),
+      unlocked: player ? player.level >= 4 : false,
+      level: 4,
+      maxLevel: 1,
+      recommendedLevel: 4,
+      icon: '📚',
+      x: 75,
+      y: 70,
+    },
+    {
+      id: 'arena',
+      name: 'Champion Arena',
+      description: 'A grand arena where warriors prove their worth',
+      discovered: discoveredLocations.includes('arena'),
+      unlocked: player ? player.level >= 5 : false,
+      level: 5,
+      maxLevel: 1,
+      recommendedLevel: 5,
+      icon: '⚔️',
+      x: 50,
+      y: 25,
     },
   ];
 
@@ -116,13 +314,22 @@ const WorldMap = () => {
       return;
     }
 
+    // Discover location if not already discovered
+    if (!location.discovered) {
+      discoverLocation(location.id);
+    }
+
     // Show level selector for locations with multiple floors
     if (location.maxLevel > 1) {
       setSelectedLocation(location);
       setShowLevelSelector(true);
     } else {
       // Single level location, just travel
+      setCurrentLocation(location.id);
       setDungeonLevel(1);
+      updateLocationStats(location.id, {
+        timesVisited: (locationStats[location.id]?.timesVisited || 0) + 1,
+      });
       toast({
         title: 'Traveling...',
         description: `Heading to ${location.name}`,
@@ -133,6 +340,12 @@ const WorldMap = () => {
   const handleLevelSelect = (level: number) => {
     if (!selectedLocation || !player) return;
     
+    // Discover location if not already discovered
+    if (!selectedLocation.discovered) {
+      discoverLocation(selectedLocation.id);
+    }
+    
+    setCurrentLocation(selectedLocation.id);
     setDungeonLevel(level);
     setLocationProgress(selectedLocation.id, level);
     updateLocationStats(selectedLocation.id, {
@@ -163,41 +376,49 @@ const WorldMap = () => {
   return (
     <div className="space-y-6">
       {/* Map Canvas */}
-      <div className="relative w-full h-[400px] bg-gradient-to-br from-green-900/20 to-blue-900/20 rounded-lg border-2 border-border overflow-hidden">
-        {/* Path Lines */}
-        <svg className="absolute inset-0 w-full h-full">
-          {locations.slice(0, -1).map((loc, i) => {
-            const nextLoc = locations[i + 1];
-            return (
-              <motion.line
-                key={`path-${loc.id}`}
-                initial={{ pathLength: 0 }}
-                animate={{ pathLength: nextLoc.discovered ? 1 : 0 }}
-                transition={{ duration: 1, delay: i * 0.2 }}
-                x1={`${loc.x}%`}
-                y1={`${loc.y}%`}
-                x2={`${nextLoc.x}%`}
-                y2={`${nextLoc.y}%`}
-                stroke="hsl(var(--primary))"
-                strokeWidth="2"
-                strokeDasharray="5,5"
-                opacity="0.5"
-              />
-            );
-          })}
-        </svg>
+      <div className="relative w-full h-[500px] bg-gradient-to-br from-green-900/20 to-blue-900/20 rounded-lg border-2 border-border overflow-auto">
+        <div className="relative min-w-full min-h-full" style={{ width: '100%', height: '100%' }}>
+          {/* Path Lines - Connect nearby locations */}
+          <svg className="absolute inset-0 w-full h-full">
+            {locations.flatMap((loc, i) =>
+              locations
+                .filter((otherLoc, j) => {
+                  if (i >= j) return false;
+                  const distance = Math.sqrt(
+                    Math.pow(loc.x - otherLoc.x, 2) + Math.pow(loc.y - otherLoc.y, 2)
+                  );
+                  return distance < 40 && (loc.discovered || otherLoc.discovered);
+                })
+                .map((otherLoc) => (
+                  <motion.line
+                    key={`path-${loc.id}-${otherLoc.id}`}
+                    initial={{ pathLength: 0 }}
+                    animate={{ pathLength: loc.discovered && otherLoc.discovered ? 1 : 0 }}
+                    transition={{ duration: 1 }}
+                    x1={`${loc.x}%`}
+                    y1={`${loc.y}%`}
+                    x2={`${otherLoc.x}%`}
+                    y2={`${otherLoc.y}%`}
+                    stroke="hsl(var(--primary))"
+                    strokeWidth="2"
+                    strokeDasharray="5,5"
+                    opacity="0.3"
+                  />
+                ))
+            )}
+          </svg>
 
-        {/* Location Markers */}
-        {locations.map((location, index) => (
-          <motion.div
-            key={location.id}
-            initial={{ scale: 0, opacity: 0 }}
-            animate={{ scale: location.discovered ? 1 : 0, opacity: location.discovered ? 1 : 0 }}
-            transition={{ delay: index * 0.2 }}
-            style={{ left: `${location.x}%`, top: `${location.y}%` }}
-            className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer"
-            onClick={() => handleTravel(location)}
-          >
+          {/* Location Markers */}
+          {locations.map((location, index) => (
+            <motion.div
+              key={location.id}
+              initial={{ scale: 0, opacity: 0 }}
+              animate={{ scale: location.discovered ? 1 : 0, opacity: location.discovered ? 1 : 0 }}
+              transition={{ delay: index * 0.1 }}
+              style={{ left: `${location.x}%`, top: `${location.y}%` }}
+              className="absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer z-10"
+              onClick={() => handleTravel(location)}
+            >
             <motion.div
               whileHover={{ scale: 1.2 }}
               className={`relative ${currentLocation === location.id ? 'animate-pulse' : ''}`}
@@ -219,7 +440,8 @@ const WorldMap = () => {
               )}
             </motion.div>
           </motion.div>
-        ))}
+          ))}
+        </div>
       </div>
 
       {/* Location List */}

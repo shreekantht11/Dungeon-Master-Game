@@ -527,6 +527,8 @@ interface GameState {
   incrementDungeonLevel: () => void;
   setLocationProgress: (locationId: string, level: number) => void;
   updateLocationStats: (locationId: string, updates: Partial<LocationStats>) => void;
+  setCurrentLocation: (locationId: string) => void;
+  discoverLocation: (locationId: string) => void;
   resetGame: () => void;
 }
 
@@ -1151,6 +1153,25 @@ export const useGameStore = create<GameState>((set) => ({
           ...state.locationStats,
           [locationId]: { ...currentStats, ...updates },
         },
+      };
+    }),
+  
+  setCurrentLocation: (locationId) =>
+    set((state) => {
+      // Only set if location is discovered
+      if (state.discoveredLocations.includes(locationId)) {
+        return { currentLocation: locationId };
+      }
+      return state;
+    }),
+  
+  discoverLocation: (locationId) =>
+    set((state) => {
+      if (state.discoveredLocations.includes(locationId)) {
+        return state; // Already discovered
+      }
+      return {
+        discoveredLocations: [...state.discoveredLocations, locationId],
       };
     }),
   

@@ -23,7 +23,6 @@ import CombatOverlay from '@/components/CombatOverlay';
 import CharacterSheet from '@/components/CharacterSheet';
 import WorldMapModal from '@/components/WorldMapModal';
 import Statistics from '@/components/Statistics';
-import ShareModal from '@/components/ShareModal';
 import TrophyRoom from '@/components/TrophyRoom';
 import CameoInviteModal from '@/components/CameoInviteModal';
 import CameoJoinModal from '@/components/CameoJoinModal';
@@ -52,7 +51,6 @@ import {
   Menu,
   Map,
   BarChart3,
-  Share2,
   Trophy,
   Award,
   Target,
@@ -113,7 +111,6 @@ const MainGameUI = () => {
   const [showInventory, setShowInventory] = useState(false);
   const [showWorldMap, setShowWorldMap] = useState(false);
   const [showStatistics, setShowStatistics] = useState(false);
-  const [showShare, setShowShare] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
   const [showTrophyRoom, setShowTrophyRoom] = useState(false);
   const [showCameoInvite, setShowCameoInvite] = useState(false);
@@ -893,10 +890,6 @@ const MainGameUI = () => {
         isOpen={showStatistics}
         onClose={() => setShowStatistics(false)}
       />
-      <ShareModal
-        isOpen={showShare}
-        onClose={() => setShowShare(false)}
-      />
       <AchievementGallery
         isOpen={showAchievements}
         onClose={() => setShowAchievements(false)}
@@ -1179,15 +1172,6 @@ const MainGameUI = () => {
                 title={t('game.achievements')}
               >
                 <Award className="w-5 h-5" />
-              </Button>
-              <Button
-                variant="outline"
-                size="icon"
-                className="hover:bg-primary/10"
-                onClick={() => setShowShare(true)}
-                title="Share"
-              >
-                <Share2 className="w-5 h-5" />
               </Button>
               <Button
                 variant="outline"
