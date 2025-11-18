@@ -6,7 +6,7 @@ An immersive, AI-powered text-based adventure game with dynamic story generation
 
 1. **Create Your Hero** – Pick a name, class (Warrior, Mage, or Rogue), gender, and preferred story language (English, Kannada, or Telugu).
 2. **Choose a Genre** – Launch into Fantasy, Sci-Fi, Mystery, or Mythical adventures. Sci-Fi stories stay grounded in real solar system locations.
-3. **Follow the Story** – Read the AI-generated narrative and pick from three contextual choices. The game pre-generates upcoming branches so responses feel instant.
+3. **Follow the Story** – Read the AI-generated narrative and pick from three contextual choices. Each decision immediately triggers a fresh FAL AI scene render—no background pre-generation.
 4. **Face Challenges** – Engage in turn-based combat, solve puzzles, and tackle quests. Use weapons, abilities, and items to survive.
 5. **Progress & Collect** – Level up, unlock badges, gather loot, craft gear, and explore new locations via the world map.
 6. **Save & Share** – Auto-saves keep progress; cloud saves unlock when you sign in with Google. Share highlights or invite friends through the cameo system.
@@ -74,18 +74,39 @@ The app will be available at `http://localhost:5173`
 1. **Create `.env` file** in the root directory:
 
 ```env
-# Google Gemini AI
-GEMINI_API_KEY=your_gemini_api_key_here
+# --- Story Generation (Gemini) ---
+# Primary/secondary keys are used with automatic failover
+GEMINI_API_KEY_PRIMARY=your_primary_gemini_story_key
+GEMINI_API_KEY_SECONDARY=your_secondary_gemini_story_key
+# Optional legacy fallback (only used if primary/secondary missing)
+GEMINI_API_KEY=legacy_story_key
 
-# MongoDB
+# --- MongoDB ---
 MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/ai-dungeon-master
 
-# Optional: Image Generation
-OPENAI_API_KEY=your_openai_api_key_here
+# --- Scene/Image Generation ---
+# SCENE_IMAGE_PROVIDERS controls the priority (max 3 slots, comma-separated).
+SCENE_IMAGE_PROVIDERS=fal
 
-# Server Config
-PORT=8000
+# FAL (primary) image provider — renders exactly one bright scene per choice (no pre-generation)
+FAL_API_KEY=your_fal_key_slot1
+FAL_API_KEY_2=
+FAL_API_KEY_3=
+FAL_MODEL=fal-ai/flux/dev
+FAL_MODEL_2=
+FAL_MODEL_3=
+FAL_RESOLUTION=landscape_16_9
+FAL_RESOLUTION_2=
+FAL_RESOLUTION_3=
+FAL_MAX_RETRIES=2
+FAL_RETRY_DELAY=0
+
+# --- Scene Service URLs ---
+SCENE_SERVICE_URL=http://localhost:8100
 CORS_ORIGIN=http://localhost:5173
+
+# --- Backend Server Config ---
+PORT=8000
 ```
 
 2. **Install Python dependencies**:

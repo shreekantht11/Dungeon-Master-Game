@@ -3,13 +3,13 @@ import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
-import { Sword, Shield, Helmet, Footprints, Gem, Sparkles, ArrowUp } from 'lucide-react';
+import { Sword, Shield, HardHat, Footprints, Gem, Sparkles, ArrowUp } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const slotIcons = {
   weapon: Sword,
   armor: Shield,
-  helmet: Helmet,
+  helmet: HardHat,
   boots: Footprints,
   ring: Gem,
   amulet: Sparkles,
@@ -94,7 +94,7 @@ const EquipmentPanel = () => {
                         </p>
                         {equippedItem.statBonuses && (
                           <div className="flex flex-wrap gap-1">
-                            {Object.entries(equippedItem.statBonuses).map(([stat, value]) => (
+                            {Object.entries(equippedItem.statBonuses as Record<string, number>).map(([stat, value]) => (
                               value ? (
                                 <span key={stat} className="text-xs text-primary flex items-center gap-0.5">
                                   <ArrowUp className="w-3 h-3" />

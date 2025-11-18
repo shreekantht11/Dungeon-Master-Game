@@ -1,7 +1,7 @@
 import datetime
 import pytest
 
-from backend.app import resolve_badges, BADGE_DEFINITIONS
+from backend.story_service import resolve_badges, BADGE_DEFINITIONS
 
 
 @pytest.mark.asyncio

@@ -1,6 +1,15 @@
-import { Player, Enemy, StoryEvent, Item } from '@/store/gameStore';
+import {
+  Player,
+  Enemy,
+  StoryEvent,
+  Item,
+  ScenePayload,
+  SceneAssets,
+  SceneStatus,
+} from '@/store/gameStore';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const SCENE_API_URL = import.meta.env.VITE_SCENE_API_URL || 'http://localhost:8100';
 
 interface StoryRequest {
   player: Player;
@@ -51,6 +60,10 @@ interface StoryResponse {
   badges?: BadgePayload[];
   unlockedBadges?: BadgePayload[];
   cameos?: CameoPayload[];
+  scene?: ScenePayload;
+  sceneId?: string;
+  sceneStatus?: SceneStatus;
+  sceneAssets?: SceneAssets;
 }
 
 interface InitializeResponse {
@@ -60,6 +73,11 @@ interface InitializeResponse {
   choices?: string[];
   greeting?: string;
   isFallback?: boolean;
+  scene?: ScenePayload;
+  sceneId?: string;
+  sceneStatus?: SceneStatus;
+  sceneAssets?: SceneAssets;
+  questProgress?: number;
 }
 
 interface CombatRequest {
@@ -179,6 +197,14 @@ export interface ArcadePuzzleSubmitResult {
   leaderboard: ArcadeLeaderboardEntry[];
 }
 
+export interface SceneResponse {
+  sceneId: string;
+  scene: ScenePayload;
+  sceneStatus: SceneStatus;
+  sceneAssets?: SceneAssets;
+  updatedAt?: string;
+}
+
 class APIError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -287,6 +313,32 @@ export const api = {
         isFallback: true,
       };
     }
+  },
+
+  async fetchScene(sceneId: string): Promise<SceneResponse> {
+    const response = await fetchWithRetry(`${SCENE_API_URL}/api/scene/status/${sceneId}`, {
+      method: 'GET',
+    });
+    return response.json();
+  },
+
+  async rerenderScene(sceneId: string): Promise<SceneResponse> {
+    const response = await fetchWithRetry(`${SCENE_API_URL}/api/scene/rerender/${sceneId}`, {
+      method: 'POST',
+    });
+    return response.json();
+  },
+
+  async getSceneProviderInfo(): Promise<{
+    provider?: string;
+    model?: string;
+    geminiKeyLabel?: string;
+    providerPool?: Array<{ id: string; provider: string; model?: string; busy?: boolean; failures?: number; disabled?: boolean; reason?: string | null }>;
+  }> {
+    const response = await fetchWithRetry(`${SCENE_API_URL}/api/provider`, {
+      method: 'GET',
+    });
+    return response.json();
   },
 
   // Combat System

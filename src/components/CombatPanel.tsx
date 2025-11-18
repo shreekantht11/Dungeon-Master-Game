@@ -9,7 +9,7 @@ import { Sword, Shield, Heart, Sparkles, Zap, Book, Clock } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { api } from '@/services/api';
 import { useTranslation } from 'react-i18next';
-import type { Item, Badge, Ability } from '@/store/gameStore';
+import type { Item, Badge as BadgePayload, Ability } from '@/store/gameStore';
 import { toast as sonnerToast } from 'sonner';
 import { getAbilitiesForClass } from '@/utils/abilities';
 
@@ -113,7 +113,7 @@ const CombatPanel = () => {
       });
 
       if (Array.isArray(res.unlockedBadges) && res.unlockedBadges.length > 0) {
-        const newlyUnlocked = res.unlockedBadges as Badge[];
+        const newlyUnlocked = res.unlockedBadges as BadgePayload[];
         unlockBadges(newlyUnlocked);
         newlyUnlocked.forEach((badge) => {
           sonnerToast.success(`🏅 ${badge.title}`, {
@@ -123,7 +123,7 @@ const CombatPanel = () => {
       }
 
       if (Array.isArray(res.badges)) {
-        setBadges(res.badges as Badge[]);
+        setBadges(res.badges as BadgePayload[]);
       }
 
       if (Array.isArray((res as any).cameos)) {
@@ -289,7 +289,7 @@ const CombatPanel = () => {
       damagePlayer(result.playerDamage);
 
       if (Array.isArray(result.unlockedBadges) && result.unlockedBadges.length > 0) {
-        const newlyUnlocked = result.unlockedBadges as Badge[];
+        const newlyUnlocked = result.unlockedBadges as BadgePayload[];
         unlockBadges(newlyUnlocked);
         newlyUnlocked.forEach((badge) => {
           sonnerToast.success(`🏅 ${badge.title}`, {
@@ -299,7 +299,7 @@ const CombatPanel = () => {
       }
 
       if (Array.isArray(result.badges)) {
-        setBadges(result.badges as Badge[]);
+        setBadges(result.badges as BadgePayload[]);
       }
 
       // Check victory/defeat

@@ -59,6 +59,45 @@ export interface CameoEntry {
   status?: string;
 }
 
+export type SceneStatus = 'pending' | 'ready' | 'offline';
+
+export interface SceneAssets {
+  imageUrl?: string;
+  thumbnailUrl?: string;
+  width?: number;
+  height?: number;
+  provider?: string;
+  model?: string;
+}
+
+export interface SceneSubject {
+  name: string;
+  role: string;
+  description?: string;
+}
+
+export interface ScenePayload {
+  sceneId: string;
+  title: string;
+  subtitle?: string;
+  genre: string;
+  locationName: string;
+  biome: string;
+  mood: string;
+  weather: string;
+  lighting: string;
+  timeOfDay: string;
+  palette: string[];
+  heroPose: string;
+  camera: string;
+  summary: string;
+  focalSubjects?: SceneSubject[];
+  supportingDetails?: string[];
+  status?: SceneStatus;
+  assets?: SceneAssets | null;
+  createdAt?: string;
+}
+
 export interface ArcadePuzzleSummary {
   id: string;
   title: string;
@@ -278,6 +317,23 @@ export interface LeaderboardEntry {
   isFriend?: boolean;
 }
 
+export interface SeasonalEvent {
+  id: string;
+  name: string;
+  description: string;
+  season: string;
+  startDate: string;
+  endDate: string;
+  rewards: {
+    coins?: number;
+    items?: string[];
+    badge?: string;
+    xp?: number;
+  };
+  active: boolean;
+  progress?: number;
+}
+
 export interface Item {
   id: string;
   name: string;
@@ -336,7 +392,7 @@ export interface StoryEvent {
   type: 'story' | 'combat' | 'item' | 'level-up';
 }
 
-interface GameState {
+export interface GameState {
   // Game State
   currentScreen: 'intro' | 'character' | 'genre' | 'game' | 'settings' | 'shop' | 'crafting' | 'codex' | 'milestones' | 'events' | 'collections' | 'progression' | 'replay' | 'leaderboards' | 'unlocks';
   gameStarted: boolean;
@@ -349,6 +405,13 @@ interface GameState {
   storyLog: StoryEvent[];
   currentStory: string;
   playerChoices: string[];
+  currentScene: ScenePayload | null;
+  sceneHistory: ScenePayload[];
+  sceneServiceStatus: SceneStatus | 'idle';
+  setScene: (scene: ScenePayload | null, options?: { addToHistory?: boolean }) => void;
+  addSceneToHistory: (scene: ScenePayload) => void;
+  updateSceneStatus: (sceneId: string, status: SceneStatus, assets?: SceneAssets | null) => void;
+  setSceneServiceStatus: (status: SceneStatus | 'idle') => void;
   
   // Combat
   inCombat: boolean;
@@ -540,6 +603,9 @@ const initialState = {
   storyLog: [],
   currentStory: '',
   playerChoices: [],
+  currentScene: null as ScenePayload | null,
+  sceneHistory: [] as ScenePayload[],
+  sceneServiceStatus: 'idle' as const,
   inCombat: false,
   currentEnemy: null,
   currentPuzzle: null,
@@ -734,6 +800,61 @@ export const useGameStore = create<GameState>((set) => ({
   updateStory: (story) => set({ currentStory: story }),
   
   setPlayerChoices: (choices) => set({ playerChoices: choices }),
+  
+  setScene: (scene, options) =>
+    set((state) => {
+      if (!scene) {
+        return { currentScene: null, sceneServiceStatus: 'idle' };
+      }
+      const normalizedPalette = Array.isArray(scene.palette) ? scene.palette : [];
+      const sanitizedScene: ScenePayload = {
+        ...scene,
+        palette: normalizedPalette,
+        status: scene.status ?? 'ready',
+      };
+      const shouldAdd = options?.addToHistory !== false;
+      const dedupedHistory = state.sceneHistory.filter((entry) => entry.sceneId !== sanitizedScene.sceneId);
+      return {
+        currentScene: sanitizedScene,
+        sceneHistory: shouldAdd ? [sanitizedScene, ...dedupedHistory].slice(0, 12) : state.sceneHistory,
+        sceneServiceStatus: sanitizedScene.status ?? 'idle',
+      };
+    }),
+
+  addSceneToHistory: (scene) =>
+    set((state) => {
+      const deduped = state.sceneHistory.filter((entry) => entry.sceneId !== scene.sceneId);
+      return {
+        sceneHistory: [scene, ...deduped].slice(0, 12),
+      };
+    }),
+
+  updateSceneStatus: (sceneId, status, assets) =>
+    set((state) => {
+      const updateEntry = (entry: ScenePayload | null) => {
+        if (!entry || entry.sceneId !== sceneId) return entry;
+        return {
+          ...entry,
+          status,
+          assets: assets ?? entry.assets ?? null,
+        };
+      };
+      return {
+        currentScene: updateEntry(state.currentScene),
+        sceneHistory: state.sceneHistory.map((entry) =>
+          entry.sceneId === sceneId
+            ? {
+                ...entry,
+                status,
+                assets: assets ?? entry.assets ?? null,
+              }
+            : entry
+        ),
+          sceneServiceStatus: sceneId === state.currentScene?.sceneId ? status : state.sceneServiceStatus,
+      };
+    }),
+
+  setSceneServiceStatus: (status) => set({ sceneServiceStatus: status }),
   
   startCombat: (enemy) => set({ inCombat: true, currentEnemy: enemy }),
   

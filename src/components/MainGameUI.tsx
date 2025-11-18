@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useGameStore } from '@/store/gameStore';
 import type { Badge } from '@/store/gameStore';
@@ -30,6 +30,7 @@ import Tutorial from '@/components/Tutorial';
 import { AchievementGallery } from '@/components/AchievementNotification';
 import ExitDialog from '@/components/ExitDialog';
 import { storage, setupAutoSave } from '@/utils/storage';
+import { cn } from '@/lib/utils';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { api } from '@/services/api';
@@ -69,7 +70,23 @@ import {
   BookOpen,
   Calendar,
   TrendingUp,
+  RefreshCw,
+  Image as ImageIcon,
 } from 'lucide-react';
+
+type SceneProviderInfo = {
+  provider?: string;
+  model?: string;
+  providerPool?: Array<{
+    id: string;
+    provider: string;
+    model?: string;
+    busy?: boolean;
+    failures?: number;
+    disabled?: boolean;
+    reason?: string | null;
+  }>;
+};
 
 const MainGameUI = () => {
   const { i18n, t } = useTranslation();
@@ -86,6 +103,9 @@ const MainGameUI = () => {
     currentLocation,
     updateStory,
     setPlayerChoices,
+    currentScene,
+    setScene,
+    updateSceneStatus,
     addStoryEvent,
     addItem,
     addQuest,
@@ -103,6 +123,8 @@ const MainGameUI = () => {
     cameos,
     setCameos,
     addCameo,
+    sceneServiceStatus,
+    setSceneServiceStatus,
   } = useGameStore();
 
   const [displayedText, setDisplayedText] = useState('');
@@ -136,11 +158,219 @@ const MainGameUI = () => {
   const animationTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const initializationRef = useRef<boolean>(false); // Prevent multiple initializations
   const initializationStoryRef = useRef<string | null>(null); // Track the initialized story to prevent duplicates
+  const [isSceneRefreshing, setIsSceneRefreshing] = useState(false);
+  const [sceneProviderInfo, setSceneProviderInfo] = useState<SceneProviderInfo | null>(null);
+  const totalSceneKeys = sceneProviderInfo?.providerPool?.length ?? 0;
+  const availableSceneKeys =
+    sceneProviderInfo?.providerPool?.filter((provider) => !provider.disabled)?.length ?? 0;
+
+  // Get scene-based animation variants
+  const getSceneAnimationVariants = () => {
+    if (!currentScene) {
+      return {
+        initial: { opacity: 0, scale: 1 },
+        animate: { opacity: 1, scale: 1 },
+        transition: { duration: 0.5 },
+      };
+    }
+
+    const mood = currentScene.mood || 'serene';
+    const weather = currentScene.weather || 'sunny';
+    const genre = currentScene.genre || 'Fantasy';
+
+    // Base animation based on mood
+    let baseAnimation: any = {
+      initial: { opacity: 0, scale: 1 },
+      animate: { opacity: 1, scale: 1 },
+      transition: { duration: 0.6 },
+    };
+
+    // Mood-based effects
+    switch (mood) {
+      case 'intense':
+        // Zoom in + subtle shake for battle scenes
+        baseAnimation = {
+          initial: { opacity: 0, scale: 1.1, x: 0 },
+          animate: {
+            opacity: 1,
+            scale: [1.1, 1.05, 1.08],
+            x: [0, -2, 2, -1, 1, 0],
+          },
+          transition: {
+            opacity: { duration: 0.4 },
+            scale: { duration: 8, repeat: Infinity, repeatType: 'reverse' },
+            x: { duration: 0.3, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+        break;
+
+      case 'mystic':
+        // Slow zoom in with glow effect
+        baseAnimation = {
+          initial: { opacity: 0, scale: 0.95 },
+          animate: {
+            opacity: 1,
+            scale: [0.95, 1.02, 1],
+            filter: ['brightness(0.9)', 'brightness(1.1)', 'brightness(1)'],
+          },
+          transition: {
+            opacity: { duration: 0.8 },
+            scale: { duration: 10, repeat: Infinity, repeatType: 'reverse' },
+            filter: { duration: 4, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+        break;
+
+      case 'serene':
+        // Slow zoom out, gentle fade
+        baseAnimation = {
+          initial: { opacity: 0, scale: 1.05 },
+          animate: {
+            opacity: 1,
+            scale: [1.05, 0.98, 1],
+            y: [0, -5, 0],
+          },
+          transition: {
+            opacity: { duration: 0.7 },
+            scale: { duration: 12, repeat: Infinity, repeatType: 'reverse' },
+            y: { duration: 6, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+        break;
+
+      case 'ominous':
+        // Darken overlay, slow zoom in
+        baseAnimation = {
+          initial: { opacity: 0, scale: 0.98 },
+          animate: {
+            opacity: 1,
+            scale: [0.98, 1.03, 1],
+            filter: ['brightness(0.7)', 'brightness(0.85)', 'brightness(0.75)'],
+          },
+          transition: {
+            opacity: { duration: 0.6 },
+            scale: { duration: 15, repeat: Infinity, repeatType: 'reverse' },
+            filter: { duration: 5, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+        break;
+
+      case 'victorious':
+        // Brighten, zoom out, celebratory
+        baseAnimation = {
+          initial: { opacity: 0, scale: 0.95 },
+          animate: {
+            opacity: 1,
+            scale: [0.95, 1.02, 0.98],
+            filter: ['brightness(1)', 'brightness(1.2)', 'brightness(1.1)'],
+          },
+          transition: {
+            opacity: { duration: 0.5 },
+            scale: { duration: 8, repeat: Infinity, repeatType: 'reverse' },
+            filter: { duration: 3, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+        break;
+
+      default:
+        // Default gentle animation
+        baseAnimation = {
+          initial: { opacity: 0, scale: 1 },
+          animate: {
+            opacity: 1,
+            scale: [1, 1.01, 1],
+          },
+          transition: {
+            opacity: { duration: 0.6 },
+            scale: { duration: 10, repeat: Infinity, repeatType: 'reverse' },
+          },
+        };
+    }
+
+    // Weather-based adjustments
+    if (weather === 'storm') {
+      // Add subtle shake for storms
+      if (baseAnimation.animate.x) {
+        baseAnimation.animate.x = [0, -3, 3, -2, 2, 0];
+      } else {
+        baseAnimation.animate.x = [0, -2, 2, -1, 1, 0];
+      }
+      if (baseAnimation.transition.x) {
+        baseAnimation.transition.x.duration = 0.2;
+      } else {
+        baseAnimation.transition.x = { duration: 0.2, repeat: Infinity, repeatType: 'reverse' };
+      }
+    }
+
+    return baseAnimation;
+  };
+
+  const sceneAnimationVariants = getSceneAnimationVariants();
+
+  const syncSceneFromResponse = useCallback(
+    (res: any, options?: { addToHistory?: boolean }) => {
+      if (res?.scene) {
+        const scenePayload = {
+          ...res.scene,
+          sceneId: res.sceneId ?? res.scene.sceneId,
+          status: res.sceneStatus ?? res.scene.status ?? 'ready',
+          assets: res.sceneAssets ?? res.scene.assets ?? null,
+        };
+        setScene(scenePayload, options);
+        setSceneServiceStatus(scenePayload.status ?? 'idle');
+      } else {
+        setScene(null, { addToHistory: false });
+        setSceneServiceStatus('idle');
+      }
+    },
+    [setScene, setSceneServiceStatus],
+  );
+
+  const handleSceneRefresh = useCallback(async () => {
+    if (!currentScene?.sceneId) return;
+    try {
+      setIsSceneRefreshing(true);
+      setSceneServiceStatus('pending');
+      const refreshed = await api.rerenderScene(currentScene.sceneId);
+      syncSceneFromResponse(refreshed, { addToHistory: true });
+      toast.success('Artwork refreshed');
+    } catch (error) {
+      console.error('Scene refresh failed', error);
+      setSceneServiceStatus('offline');
+      toast.error('Unable to refresh artwork');
+    } finally {
+      setIsSceneRefreshing(false);
+    }
+  }, [currentScene?.sceneId, setSceneServiceStatus, syncSceneFromResponse]);
 
   // Auto-save setup
   useEffect(() => {
     const cleanup = setupAutoSave(() => useGameStore.getState());
     return cleanup;
+  }, []);
+
+  // Scene provider info
+  useEffect(() => {
+    let isMounted = true;
+    const fetchProviderInfo = async () => {
+      try {
+        const info = await api.getSceneProviderInfo();
+        if (isMounted) {
+          setSceneProviderInfo(info);
+        }
+      } catch (error) {
+        if (isMounted) {
+          setSceneProviderInfo(null);
+        }
+        console.warn('Failed to fetch scene provider info', error);
+      }
+    };
+    fetchProviderInfo();
+    const interval = setInterval(fetchProviderInfo, 60000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // Check tutorial
@@ -279,6 +509,7 @@ const MainGameUI = () => {
     }
     
     updateGameState({ isInitialized: true, turnCount: 0 });
+    syncSceneFromResponse(res);
   };
 
   // Handle quest dialog "Start" button
@@ -341,6 +572,7 @@ const MainGameUI = () => {
         isAfterCombat: false,
         storyPhase: res.storyPhase || 'exploration',
       });
+      syncSceneFromResponse(res, { addToHistory: true });
     } catch (error) {
       console.error('Failed to continue story after combat:', error);
     } finally {
@@ -363,6 +595,50 @@ const MainGameUI = () => {
     };
     loadQuickSaves();
   }, [authUser?.name, gameState.turnCount]);
+
+  // Poll for pending scene renders
+  useEffect(() => {
+    if (!currentScene?.sceneId || currentScene.status !== 'pending') {
+      return;
+    }
+    let isMounted = true;
+    const pollScene = async () => {
+      try {
+        const latest = await api.fetchScene(currentScene.sceneId);
+        if (!isMounted) return;
+        if (latest.sceneStatus) {
+          updateSceneStatus(currentScene.sceneId, latest.sceneStatus, latest.sceneAssets ?? null);
+        }
+        if (latest.sceneStatus === 'ready' && latest.scene) {
+          syncSceneFromResponse(
+            {
+              sceneId: latest.sceneId,
+              scene: latest.scene,
+              sceneStatus: latest.sceneStatus,
+              sceneAssets: latest.sceneAssets,
+            },
+            { addToHistory: false },
+          );
+        }
+        if (latest.sceneStatus === 'offline') {
+          // stop polling if backend marked offline
+          isMounted = false;
+        }
+      } catch (error) {
+        console.error('Scene polling failed', error);
+        if (isMounted) {
+          setSceneServiceStatus('offline');
+        }
+      }
+    };
+
+    const interval = setInterval(pollScene, 7000);
+    pollScene();
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, [currentScene?.sceneId, currentScene?.status, setSceneServiceStatus, syncSceneFromResponse, updateSceneStatus]);
 
   // Letter-by-letter animation for story text at 2x speed
   useEffect(() => {
@@ -558,6 +834,8 @@ const MainGameUI = () => {
     setDisplayedText(''); // Clear story text to show loading message
     setLoadingStory(true);
     setAiStatus('active');
+    setSceneServiceStatus('pending');
+    setScene(null, { addToHistory: false });
     
     try {
       // Update turn count
@@ -685,6 +963,8 @@ const MainGameUI = () => {
         res.items.forEach((it: any) => addItem(it));
       }
 
+      syncSceneFromResponse(res);
+
       // Auto-save to backend (best-effort)
       try {
         const latestState = useGameStore.getState();
@@ -737,6 +1017,8 @@ const MainGameUI = () => {
       updateStory(`You chose to ${choice.toLowerCase()}. The path continues...`);
       setPlayerChoices(['Approach cautiously', 'Draw your weapon', 'Retreat quietly']);
       updateGameState({ turnCount: gameState.turnCount + 1 });
+      setScene(null, { addToHistory: false });
+      setSceneServiceStatus('offline');
     } finally {
       setLoadingStory(false);
     }
@@ -1223,199 +1505,268 @@ const MainGameUI = () => {
           </div>
         </div>
 
-        {/* Main Content Area - Scrollable */}
-        <div className="flex-1 container mx-auto p-4 flex gap-4 overflow-y-auto">
-          {/* Story Panel (Left) */}
-          <Card className="flex-1 panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-6 flex flex-col min-h-0">
-            <div className="flex items-center gap-2 mb-4 pb-4 border-b border-border flex-shrink-0">
-              <Book className="w-6 h-6 text-primary" />
-              <h3 className="text-xl font-fantasy text-primary">The Tale Unfolds</h3>
-              <div className="ml-auto flex items-center gap-1.5 px-2 py-1 rounded-lg bg-background/50 border border-border/50">
-                {aiStatus === 'active' ? (
-                  <>
-                    <Activity className="w-3.5 h-3.5 text-green-500 animate-pulse" />
-                    <span className="text-xs font-semibold text-green-500">AI Active</span>
-                  </>
-                ) : aiStatus === 'offline' ? (
-                  <>
-                    <WifiOff className="w-3.5 h-3.5 text-red-500" />
-                    <span className="text-xs font-semibold text-red-500">AI Offline</span>
-                  </>
-                ) : (
-                  <>
-                    <Wifi className="w-3.5 h-3.5 text-muted-foreground" />
-                    <span className="text-xs font-semibold text-muted-foreground">AI Idle</span>
-                  </>
-                )}
-              </div>
-            </div>
-
-            <ScrollArea className="flex-1 min-h-0 pr-4">
-              <motion.div
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="prose prose-invert font-elegant text-lg leading-relaxed"
-              >
-                {loadingStory && !displayedText ? (
-                  <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground py-16">
-                    {gameState.turnCount === 0 ? (
-                      // Initial load - before first story
-                      <>
+        <div className="flex-1 container mx-auto p-4 flex flex-col gap-4 overflow-hidden">
+          <div className="flex flex-col xl:flex-row gap-4 flex-1 overflow-hidden">
+            <div className="flex flex-col lg:flex-row gap-4 flex-1 overflow-hidden">
+              <Card className="relative flex-1 panel-glow bg-card/90 border border-white/10 shadow-2xl overflow-hidden min-h-[360px]">
+                <div className="relative flex flex-col h-full text-white p-5 gap-4">
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <div className="flex items-center gap-2">
+                      <ImageIcon className="w-5 h-5 text-primary" />
+                      <h3 className="text-lg font-fantasy text-white drop-shadow">Scene Artwork</h3>
+                    </div>
+                    <span
+                      className={cn(
+                        'rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-widest',
+                        sceneServiceStatus === 'ready'
+                          ? 'border-emerald-400 text-emerald-200'
+                          : sceneServiceStatus === 'pending'
+                          ? 'border-amber-300 text-amber-200'
+                          : 'border-white/30 text-white/70',
+                      )}
+                    >
+                      {sceneServiceStatus === 'ready'
+                        ? 'Ready'
+                        : sceneServiceStatus === 'pending'
+                        ? 'Rendering'
+                        : 'Offline'}
+                    </span>
+                  </div>
+                  <div className="relative flex-1 rounded-2xl border border-white/10 overflow-hidden bg-black/40">
+                    <AnimatePresence mode="wait">
+                      {currentScene?.assets?.imageUrl ? (
+                        <motion.img
+                          key={currentScene.sceneId}
+                          src={currentScene.assets.imageUrl}
+                          alt="Scene artwork"
+                          className="w-full h-full object-cover"
+                          initial={sceneAnimationVariants.initial}
+                          animate={sceneAnimationVariants.animate}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={sceneAnimationVariants.transition}
+                          style={{
+                            willChange: 'transform, opacity, filter',
+                          }}
+                        />
+                      ) : (
+                      <div
+                        className="absolute inset-0 flex flex-col items-center justify-center text-white/70 gap-3"
+                        style={{ backgroundImage: `url(${dungeonBg})`, backgroundSize: 'cover', backgroundPosition: 'center' }}
+                      >
+                        <div className="backdrop-blur-[2px] bg-black/50 rounded-2xl px-6 py-4 text-center space-y-3 max-w-xs">
+                          {sceneServiceStatus === 'pending' ? (
+                            <Loader2 className="w-8 h-8 mx-auto animate-spin text-primary" />
+                          ) : (
+                            <ImageIcon className="w-8 h-8 mx-auto text-white/60" />
+                          )}
+                          <p className="text-sm font-elegant">
+                            {sceneServiceStatus === 'pending'
+                              ? 'Rendering luminous artwork for this moment...'
+                              : 'Make a choice to generate vivid scene art.'}
+                          </p>
+                        </div>
+                      </div>
+                      )}
+                    </AnimatePresence>
+                    {sceneServiceStatus === 'pending' && (
+                      <div className="absolute inset-0 bg-black/50 flex flex-col items-center justify-center gap-2 text-white/80">
                         <Loader2 className="w-8 h-8 animate-spin text-primary" />
-                        <p className="text-sm font-elegant">AI is unfolding your story...</p>
-                      </>
-                    ) : (
-                      // After first turn - show typing indicator
-                      <div className="flex items-center gap-2">
-                        <motion.span
-                          animate={{ opacity: [1, 0.3, 1] }}
-                          transition={{ duration: 1, repeat: Infinity }}
-                          className="text-2xl text-primary"
-                        >
-                          ▊
-                        </motion.span>
-                        <p className="text-sm font-elegant">AI is crafting your story...</p>
+                        <p className="text-[11px] uppercase tracking-[0.4em]">Rendering</p>
                       </div>
                     )}
                   </div>
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    transition={{ duration: 0.3 }}
-                  >
-                    {displayedText}
-                    {isTyping && (
-                      <motion.span
-                        animate={{ opacity: [1, 0, 1] }}
-                        transition={{ duration: 0.8, repeat: Infinity }}
-                        className="text-primary ml-1"
-                      >
-                        ▊
-                      </motion.span>
-                    )}
-                  </motion.div>
-                )}
-              </motion.div>
-            </ScrollArea>
-
-            {/* Player Choices - Always visible at bottom */}
-            {!isTyping && playerChoices.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.3 }}
-                className={`space-y-2 mt-4 pt-4 border-t flex-shrink-0 transition-all duration-300 ${
-                  showWeaponSelection 
-                    ? 'border-destructive/50 bg-destructive/5 rounded-lg p-4' 
-                    : 'border-border'
-                }`}
-              >
-                <p className={`text-xs font-semibold mb-2 flex items-center gap-2 ${
-                  showWeaponSelection ? 'text-destructive' : 'text-muted-foreground'
-                }`}>
-                  {showWeaponSelection && (
-                    <motion.span
-                      animate={{ scale: [1, 1.2, 1] }}
-                      transition={{ duration: 1, repeat: Infinity }}
-                      className="text-destructive"
-                    >
-                      ⚔️
-                    </motion.span>
-                  )}
-                  {showWeaponSelection ? 'Choose your weapon:' : 'What will you do?'}
-                </p>
-                <div className="grid grid-cols-1 gap-2">
-                  {playerChoices.map((choice, index) => {
-                    // Check if this is a weapon choice
-                    const weapon = showWeaponSelection ? player?.inventory.find(item => item.name === choice || item.id === choice) : null;
-                    const weaponSymbol = weapon ? getWeaponSymbol(weapon.name, weapon.type) : null;
-                    const isFists = choice.toLowerCase().includes('fight with fists');
-                    
-                    return (
-                      <motion.div
-                        key={index}
-                        animate={showWeaponSelection ? {
-                          borderColor: ['rgba(239, 68, 68, 0.3)', 'rgba(239, 68, 68, 0.8)', 'rgba(239, 68, 68, 0.3)'],
-                        } : {}}
-                        transition={{ duration: 1.5, repeat: Infinity }}
-                      >
-                        <Button
-                          onClick={() => handleChoice(choice)}
-                          disabled={loadingStory || combatAnimation !== null}
-                          className={`w-full justify-start text-left h-auto py-3 px-4 transition-all duration-300 group ${
-                            showWeaponSelection
-                              ? 'bg-destructive/10 hover:bg-destructive/20 border-2 border-destructive/50 hover:border-destructive'
-                              : 'bg-primary/10 hover:bg-primary/20 border border-primary/30 hover:border-primary'
-                          } ${
-                            loadingStory || combatAnimation !== null ? 'opacity-60 cursor-not-allowed' : ''
-                          }`}
-                          variant="outline"
-                        >
-                          {showWeaponSelection && weaponSymbol ? (
-                            <motion.span 
-                              className="text-2xl mr-3"
-                              animate={{ rotate: [0, 15, -15, 0] }}
-                              transition={{ duration: 0.5, repeat: Infinity }}
-                            >
-                              {weaponSymbol}
-                            </motion.span>
-                          ) : showWeaponSelection && isFists ? (
-                            <motion.span 
-                              className="text-2xl mr-3"
-                              animate={{ scale: [1, 1.2, 1] }}
-                              transition={{ duration: 0.8, repeat: Infinity }}
-                            >
-                              👊
-                            </motion.span>
-                          ) : (
-                            <Play className="w-4 h-4 mr-3 group-hover:translate-x-1 transition-transform flex-shrink-0" />
-                          )}
-                          <span className="font-elegant text-base leading-relaxed">{choice}</span>
-                        </Button>
-                      </motion.div>
-                    );
-                  })}
                 </div>
-              </motion.div>
-            )}
-            
-            {/* Combat Animation Display */}
-            {combatAnimation && (
-              <motion.div
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.8 }}
-                className={`fixed inset-0 flex items-center justify-center z-50 pointer-events-none ${
-                  combatAnimation === 'victory' ? 'bg-green-500/20' :
-                  combatAnimation === 'defeat' ? 'bg-red-500/20' :
-                  'bg-yellow-500/20'
-                }`}
-              >
-                <motion.div
-                  animate={{ 
-                    scale: [1, 1.2, 1],
-                    opacity: [0.8, 1, 0.8]
-                  }}
-                  transition={{ duration: 0.6, repeat: Infinity }}
-                  className={`text-4xl font-bold ${
-                    combatAnimation === 'victory' ? 'text-green-500' :
-                    combatAnimation === 'defeat' ? 'text-red-500' :
-                    'text-yellow-500'
-                  }`}
-                >
-                  {combatAnimation === 'victory' && '⚔️ VICTORY! ⚔️'}
-                  {combatAnimation === 'defeat' && '💀 DEFEATED 💀'}
-                  {combatAnimation === 'attacking' && '⚔️ ATTACKING! ⚔️'}
-                </motion.div>
-              </motion.div>
-            )}
-          </Card>
-
-          {/* Stats & Actions Panel (Right) */}
-          <div className="w-80 space-y-4">
-            {/* Tabs for different views */}
-            <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-4">
+              </Card>
+              <Card className="relative flex-1 panel-glow bg-card/95 border border-white/10 shadow-2xl overflow-hidden min-h-[360px]">
+                <div className="absolute inset-0 pointer-events-none bg-gradient-to-b from-black/5 via-black/30 to-black/60" />
+                <div className="relative flex flex-col h-full p-5 gap-4">
+                  <div className="flex items-center justify-between border-b border-border pb-2">
+                    <div className="flex items-center gap-2">
+                      <Book className="w-5 h-5 text-primary" />
+                      <h3 className="text-xl font-fantasy text-foreground">The Tale Unfolds</h3>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-muted-foreground">
+                      {aiStatus === 'active' ? (
+                        <>
+                          <Activity className="w-3 h-3 text-emerald-300 animate-pulse" />
+                          <span>AI Active</span>
+                        </>
+                      ) : aiStatus === 'offline' ? (
+                        <>
+                          <WifiOff className="w-3 h-3 text-red-400" />
+                          <span>AI Offline</span>
+                        </>
+                      ) : (
+                        <>
+                          <Wifi className="w-3 h-3 text-white/70" />
+                          <span>AI Idle</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                  <ScrollArea className="flex-1 min-h-0 pr-2">
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="prose prose-invert font-elegant text-lg leading-relaxed text-foreground"
+                    >
+                      {loadingStory && !displayedText ? (
+                        <div className="flex flex-col items-center justify-center gap-4 text-muted-foreground py-16">
+                          {gameState.turnCount === 0 ? (
+                            <>
+                              <Loader2 className="w-8 h-8 animate-spin text-primary" />
+                              <p className="text-sm font-elegant">AI is unfolding your story...</p>
+                            </>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <motion.span
+                                animate={{ opacity: [1, 0.3, 1] }}
+                                transition={{ duration: 1, repeat: Infinity }}
+                                className="text-2xl text-primary"
+                              >
+                                ▊
+                              </motion.span>
+                              <p className="text-sm font-elegant">AI is crafting your story...</p>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.3 }} className="text-foreground">
+                          {displayedText}
+                          {isTyping && (
+                            <motion.span
+                              animate={{ opacity: [1, 0, 1] }}
+                              transition={{ duration: 0.8, repeat: Infinity }}
+                              className="text-primary ml-1"
+                            >
+                              ▊
+                            </motion.span>
+                          )}
+                        </motion.div>
+                      )}
+                    </motion.div>
+                  </ScrollArea>
+                  {!isTyping && playerChoices.length > 0 && (
+                    <motion.div
+                      initial={{ opacity: 0, y: 20 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: 0.3 }}
+                      className={`space-y-2 mt-2 pt-3 border-t flex-shrink-0 transition-all duration-300 ${
+                        showWeaponSelection ? 'border-red-300/60 bg-red-500/10 rounded-lg p-4' : 'border-border'
+                      }`}
+                    >
+                      <p
+                        className={`text-xs font-semibold mb-2 flex items-center gap-2 ${
+                          showWeaponSelection ? 'text-red-200' : 'text-foreground'
+                        }`}
+                      >
+                        {showWeaponSelection && (
+                          <motion.span
+                            animate={{ scale: [1, 1.2, 1] }}
+                            transition={{ duration: 1, repeat: Infinity }}
+                            className="text-red-200"
+                          >
+                            ⚔️
+                          </motion.span>
+                        )}
+                        {showWeaponSelection ? 'Choose your weapon:' : 'What will you do?'}
+                      </p>
+                      <div className="grid grid-cols-1 gap-1.5">
+                        {playerChoices.map((choice, index) => {
+                          const weapon = showWeaponSelection
+                            ? player?.inventory.find((item) => item.name === choice || item.id === choice)
+                            : null;
+                          const weaponSymbol = weapon ? getWeaponSymbol(weapon.name, weapon.type) : null;
+                          const isFists = choice.toLowerCase().includes('fight with fists');
+                          return (
+                            <motion.div
+                              key={index}
+                              animate={
+                                showWeaponSelection
+                                  ? {
+                                      borderColor: [
+                                        'rgba(239, 68, 68, 0.3)',
+                                        'rgba(239, 68, 68, 0.8)',
+                                        'rgba(239, 68, 68, 0.3)',
+                                      ],
+                                    }
+                                  : {}
+                              }
+                              transition={{ duration: 1.5, repeat: Infinity }}
+                            >
+                              <Button
+                                onClick={() => handleChoice(choice)}
+                                disabled={loadingStory || combatAnimation !== null}
+                                className={`w-full justify-start text-left h-auto py-2 px-3 transition-all duration-300 text-sm group ${
+                                  showWeaponSelection
+                                    ? 'bg-red-500/15 hover:bg-red-500/25 border border-red-400/60 text-red-50'
+                                    : 'bg-muted hover:bg-muted/80 border border-border text-foreground'
+                                } ${loadingStory || combatAnimation !== null ? 'opacity-60 cursor-not-allowed' : ''}`}
+                                variant="outline"
+                              >
+                                {showWeaponSelection && weaponSymbol ? (
+                                  <motion.span
+                                    className="text-2xl mr-3"
+                                    animate={{ rotate: [0, 15, -15, 0] }}
+                                    transition={{ duration: 0.5, repeat: Infinity }}
+                                  >
+                                    {weaponSymbol}
+                                  </motion.span>
+                                ) : showWeaponSelection && isFists ? (
+                                  <motion.span
+                                    className="text-2xl mr-3"
+                                    animate={{ scale: [1, 1.2, 1] }}
+                                    transition={{ duration: 0.8, repeat: Infinity }}
+                                  >
+                                    👊
+                                  </motion.span>
+                                ) : (
+                                  <Play className="w-4 h-4 mr-3 group-hover:translate-x-1 transition-transform flex-shrink-0" />
+                                )}
+                                <span className="font-elegant text-base leading-relaxed">{choice}</span>
+                              </Button>
+                            </motion.div>
+                          );
+                        })}
+                      </div>
+                    </motion.div>
+                  )}
+                  {combatAnimation && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.8 }}
+                      className={`fixed inset-0 flex items-center justify-center z-50 pointer-events-none ${
+                        combatAnimation === 'victory'
+                          ? 'bg-green-500/20'
+                          : combatAnimation === 'defeat'
+                          ? 'bg-red-500/20'
+                          : 'bg-yellow-500/20'
+                      }`}
+                    >
+                      <motion.div
+                        animate={{ scale: [1, 1.2, 1], opacity: [0.8, 1, 0.8] }}
+                        transition={{ duration: 0.6, repeat: Infinity }}
+                        className={`text-4xl font-bold ${
+                          combatAnimation === 'victory'
+                            ? 'text-green-500'
+                            : combatAnimation === 'defeat'
+                            ? 'text-red-500'
+                            : 'text-yellow-500'
+                        }`}
+                      >
+                        {combatAnimation === 'victory' && '⚔️ VICTORY! ⚔️'}
+                        {combatAnimation === 'defeat' && '💀 DEFEATED 💀'}
+                        {combatAnimation === 'attacking' && '⚔️ ATTACKING! ⚔️'}
+                      </motion.div>
+                    </motion.div>
+                  )}
+                </div>
+              </Card>
+            </div>
+            <div className="w-full xl:w-[360px] flex-shrink-0 space-y-4 overflow-hidden">
+              {/* Tabs for different views */}
+              <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-4">
               <Tabs value={activeTab} onValueChange={setActiveTab}>
                 <TabsList className="grid w-full grid-cols-4">
                   <TabsTrigger value="stats" className="text-xs">
@@ -1507,60 +1858,33 @@ const MainGameUI = () => {
               </Tabs>
             </Card>
 
-            {/* Action Buttons */}
+            {/* Inventory Panel */}
             <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-4">
-              <h3 className="text-lg font-fantasy text-primary mb-4">Actions</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <Button
-                  variant="outline"
-                  className="h-20 flex flex-col items-center justify-center gap-2 hover:bg-destructive/20 border-destructive/30"
-                  onClick={() => toast.info('Combat action - Coming soon!')}
-                >
-                  <Sword className="w-6 h-6" />
-                  <span className="text-xs">Attack</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-20 flex flex-col items-center justify-center gap-2 hover:bg-secondary/20 border-secondary/30"
-                  onClick={() => toast.info('Defense action - Coming soon!')}
-                >
-                  <Shield className="w-6 h-6" />
-                  <span className="text-xs">Defend</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-20 flex flex-col items-center justify-center gap-2 hover:bg-primary/20 border-primary/30"
-                  onClick={() => setShowInventory(true)}
-                >
-                  <Package className="w-6 h-6" />
-                  <span className="text-xs">Use Item</span>
-                </Button>
-                <Button
-                  variant="outline"
-                  className="h-20 flex flex-col items-center justify-center gap-2 hover:bg-accent/20 border-accent/30"
-                  onClick={() => toast.info('Jump action - Coming soon!')}
-                >
-                  <ArrowUp className="w-6 h-6" />
-                  <span className="text-xs">Jump</span>
-                </Button>
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-fantasy text-primary">Inventory</h3>
+                {player.inventory.length > 6 && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setShowInventory(true)}
+                    className="text-xs text-muted-foreground hover:text-primary"
+                  >
+                    View All ({player.inventory.length})
+                  </Button>
+                )}
               </div>
-            </Card>
-
-            {/* Inventory Preview */}
-            <Card className="panel-glow bg-card/95 backdrop-blur-sm border-2 border-primary/30 p-4">
-              <h3 className="text-lg font-fantasy text-primary mb-4">Inventory</h3>
               {player.inventory.length === 0 ? (
                 <p className="text-sm text-muted-foreground italic text-center py-4">
                   Your inventory is empty
                 </p>
               ) : (
-                <div className="space-y-2">
-                  {player.inventory.slice(0, 3).map((item) => {
+                <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                  {player.inventory.slice(0, 6).map((item) => {
                     const weaponSymbol = getWeaponSymbol(item.name, item.type);
                     return (
                       <div
                         key={item.id}
-                        className="flex items-center justify-between p-2 rounded bg-muted/50"
+                        className="flex items-center justify-between p-2 rounded bg-muted/50 hover:bg-muted/70 transition-colors"
                       >
                         <span className="text-sm flex items-center gap-2">
                           {weaponSymbol && <span className="text-lg">{weaponSymbol}</span>}
@@ -1572,6 +1896,17 @@ const MainGameUI = () => {
                       </div>
                     );
                   })}
+                  {player.inventory.length > 6 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full mt-2"
+                      onClick={() => setShowInventory(true)}
+                    >
+                      <Package className="w-4 h-4 mr-2" />
+                      View All Items
+                    </Button>
+                  )}
                 </div>
               )}
             </Card>
@@ -1579,6 +1914,7 @@ const MainGameUI = () => {
         </div>
       </div>
     </div>
+  </div>
   );
 };
 

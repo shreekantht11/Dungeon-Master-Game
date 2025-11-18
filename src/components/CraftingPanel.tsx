@@ -20,6 +20,7 @@ interface Recipe {
   result: { itemId: string; name: string; quantity: number };
   levelRequirement: number;
   coinCost?: number;
+  statBonuses?: Record<string, number>;
 }
 
 const defaultRecipes: Recipe[] = [
@@ -113,7 +114,7 @@ const CraftingPanel = () => {
       name: recipe.result.name,
       type: recipe.category === 'weapon' ? 'weapon' : recipe.category === 'armor' ? 'armor' : 'potion',
       quantity: recipe.result.quantity,
-      statBonuses: (recipe as any).statBonuses,
+      statBonuses: recipe.statBonuses,
     });
 
     // Learn recipe if not learned

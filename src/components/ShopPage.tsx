@@ -19,6 +19,7 @@ interface VendorItem {
   rarity?: string;
   levelRequirement?: number;
   stock?: number;
+  slot?: 'weapon' | 'armor' | 'helmet' | 'boots' | 'ring' | 'amulet';
 }
 
 interface Vendor {
@@ -121,7 +122,7 @@ const ShopPage = () => {
         rarity: item.rarity as any,
         levelRequirement: item.levelRequirement,
         price: item.price,
-        slot: (item as any).slot,
+      slot: item.slot,
       });
 
       // Increase reputation

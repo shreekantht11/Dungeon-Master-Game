@@ -187,7 +187,7 @@ const CollectionsPage = () => {
                             <div className="p-3 bg-muted/50 rounded-lg">
                               <p className="text-xs font-semibold mb-2">Set Bonus:</p>
                               <div className="flex flex-wrap gap-2">
-                                {Object.entries(set.reward.statBonus).map(([stat, value]) => (
+                                {Object.entries(set.reward.statBonus as Record<string, number>).map(([stat, value]) => (
                                   <Badge key={stat} variant="secondary" className="text-xs">
                                     +{value} {stat}
                                   </Badge>
