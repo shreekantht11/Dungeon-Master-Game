@@ -1513,7 +1513,7 @@ const MainGameUI = () => {
                   <div className="flex items-center justify-between border-b border-white/10 pb-2">
                     <div className="flex items-center gap-2">
                       <ImageIcon className="w-5 h-5 text-primary" />
-                      <h3 className="text-lg font-fantasy text-white drop-shadow">Scene Artwork</h3>
+                      <h3 className="text-lg font-fantasy text-white drop-shadow">Scene</h3>
                     </div>
                     <span
                       className={cn(
